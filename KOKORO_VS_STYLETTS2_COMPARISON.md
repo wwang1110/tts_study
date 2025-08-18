@@ -79,6 +79,10 @@ Both models share nearly identical ISTFT-Net implementations, indicating a commo
 - **Style Conditioning**: [`AdaIN1d`](kokoro/istftnet.py:20) normalization throughout
 - **STFT Processing**: Spectral domain synthesis with inverse STFT
 
+#### Key Implementation Difference
+- **Kokoro AdaIN1d**: Uses `affine=True` in InstanceNorm1d for ONNX compatibility
+- **StyleTTS2 AdaIN1d**: Uses `affine=False` in InstanceNorm1d (standard implementation)
+
 ### Text Encoding Architecture
 
 Both models implement similar text encoding patterns:
@@ -137,11 +141,11 @@ F0_pred, N_pred = self.F0Ntrain(aligned_features, style)  # F0 and energy predic
 
 ### 2. Training Methodology
 
-#### Kokoro: Direct Optimization
+#### Kokoro: Training Code Not Available
 ```python
-# Simple, direct training approach
-loss = reconstruction_loss + prosody_loss + style_loss
-optimizer.step()
+# Note: The Kokoro repository contains only inference code
+# Training methodology is not publicly available
+# Repository includes: model.py, pipeline.py, modules.py, __main__.py, istftnet.py
 ```
 
 #### StyleTTS2: Adversarial + Diffusion Training
@@ -165,7 +169,7 @@ disc_loss = discriminator_loss
 #### Kokoro: Reference Audio Embeddings
 - **Method**: Direct use of pre-computed voice embeddings
 - **Storage**: Voice vectors cached as `.pt` files
-- **Usage**: `ref_s[:, :128]` for decoder, `ref_s[:, 128:]` for prosody
+- **Usage**: `ref_s[:, :128]` for decoder style, `ref_s[:, 128:]` for prosody style
 - **Advantage**: Simple, efficient, fast inference
 
 #### StyleTTS2: Learned Style Encoders
@@ -178,11 +182,24 @@ disc_loss = discriminator_loss
 
 #### Kokoro: Multilingual Focus
 ```python
-LANG_CODES = {
-    'a': 'American English', 'b': 'British English',
-    'e': 'Spanish', 'f': 'French', 'h': 'Hindi',
-    'i': 'Italian', 'j': 'Japanese', 'p': 'Portuguese', 'z': 'Chinese'
-}
+LANG_CODES = dict(
+    # pip install misaki[en]
+    a='American English',
+    b='British English',
+
+    # espeak-ng
+    e='es',
+    f='fr-fr',
+    h='hi',
+    i='it',
+    p='pt-br',
+
+    # pip install misaki[ja]
+    j='Japanese',
+
+    # pip install misaki[zh]
+    z='Mandarin Chinese',
+)
 
 # Language-specific G2P processing
 if lang_code in 'ab':
@@ -221,9 +238,9 @@ elif args.decoder.type == "hifigan":
 
 #### Kokoro: Production-Ready Features
 - **ONNX Export**: Custom STFT implementation for deployment
-- **Streaming**: Low-latency inference capabilities
-- **Memory Efficiency**: Optimized for resource-constrained environments
+- **ONNX Compatibility**: `disable_complex` flag and modified AdaIN1d with `affine=True` for ONNX export
 - **CLI Interface**: Ready-to-use command-line tool
+- **Voice Management**: Efficient voice loading and blending system
 
 #### StyleTTS2: Research-Grade Enhancements
 - **Diffusion Models**: [`AudioDiffusionConditional`](styletts2/Modules/diffusion/diffusion.py:66) for quality enhancement
@@ -292,8 +309,158 @@ The comparison reveals how the same foundational components can be:
 - **Streamlined** (Kokoro): For practical deployment
 - **Enhanced** (StyleTTS2): For research and quality maximization
 
+## Unique Components Analysis
+
+### Components in StyleTTS2 but NOT in Kokoro
+
+#### 1. Discriminator Networks ([`discriminators.py`](styletts2/Modules/discriminators.py))
+StyleTTS2 implements multiple discriminators for adversarial training:
+
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| [`MultiPeriodDiscriminator`](styletts2/Modules/discriminators.py:132) | `styletts2/Modules/discriminators.py:132` | Analyzes audio at different temporal periods (2,3,5,7,11) |
+| [`MultiResSpecDiscriminator`](styletts2/Modules/discriminators.py:65) | `styletts2/Modules/discriminators.py:65` | Multi-resolution spectral analysis (1024, 2048, 512 FFT) |
+| [`WavLMDiscriminator`](styletts2/Modules/discriminators.py:158) | `styletts2/Modules/discriminators.py:158` | Uses WavLM features for semantic discrimination |
+| [`SpecDiscriminator`](styletts2/Modules/discriminators.py:29) | `styletts2/Modules/discriminators.py:29` | Individual spectral discriminator |
+| [`DiscriminatorP`](styletts2/Modules/discriminators.py:96) | `styletts2/Modules/discriminators.py:96` | Period-based discriminator |
+
+**Purpose**: Enable adversarial training for higher quality audio generation
+
+#### 2. Diffusion Model Components ([`diffusion/`](styletts2/Modules/diffusion/))
+Advanced diffusion-based enhancement system:
+
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| [`AudioDiffusionConditional`](styletts2/Modules/diffusion/diffusion.py:66) | `styletts2/Modules/diffusion/diffusion.py:66` | Conditional audio diffusion model |
+| [`StyleTransformer1d`](styletts2/Modules/diffusion/modules.py) | `styletts2/Modules/diffusion/modules.py` | Style-aware transformer for diffusion |
+| [`KDiffusion`](styletts2/Modules/diffusion/sampler.py) | `styletts2/Modules/diffusion/sampler.py` | Diffusion sampling with various schedulers |
+| [`LogNormalDistribution`](styletts2/Modules/diffusion/sampler.py) | `styletts2/Modules/diffusion/sampler.py` | Noise distribution for diffusion |
+
+**Purpose**: Enhance audio quality through diffusion-based post-processing
+
+#### 3. Advanced Style Modeling ([`models.py`](styletts2/models.py))
+Sophisticated style extraction and manipulation:
+
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| [`StyleEncoder`](styletts2/models.py:139) | `styletts2/models.py:139` | 2D CNN-based acoustic style extraction |
+| [`Discriminator2d`](styletts2/models.py:178) | `styletts2/models.py:178` | 2D discriminator for style consistency |
+| [`ResBlk`](styletts2/models.py:96) | `styletts2/models.py:96` | 2D residual blocks with downsampling |
+| [`LearnedDownSample`](styletts2/models.py:27) | `styletts2/models.py:27` | Learnable downsampling operations |
+| [`LearnedUpSample`](styletts2/models.py:44) | `styletts2/models.py:44` | Learnable upsampling operations |
+
+**Purpose**: Advanced style control and voice cloning capabilities
+
+#### 4. HiFi-GAN Vocoder ([`hifigan.py`](styletts2/Modules/hifigan.py))
+Alternative vocoder implementation:
+
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| [`Generator`](styletts2/Modules/hifigan.py:272) | `styletts2/Modules/hifigan.py:272` | HiFi-GAN generator (alternative to ISTFT-Net) |
+| [`Decoder`](styletts2/Modules/hifigan.py:416) | `styletts2/Modules/hifigan.py:416` | HiFi-GAN-based decoder |
+
+**Purpose**: Provide alternative vocoder option for different quality/speed trade-offs
+
+#### 5. External Model Integration
+Integration with external models for enhanced functionality:
+
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| [`ASRCNN`](styletts2/models.py:15) | `Utils/ASR/models` | Automatic Speech Recognition model |
+| [`JDCNet`](styletts2/models.py:16) | `Utils/JDC/model` | F0 extraction model |
+| [`load_F0_models`](styletts2/models.py:584) | `styletts2/models.py:584` | F0 model loading utilities |
+| [`load_ASR_models`](styletts2/models.py:594) | `styletts2/models.py:594` | ASR model loading utilities |
+
+**Purpose**: Leverage pre-trained models for better feature extraction
+
+### Components in Kokoro but NOT in StyleTTS2
+
+#### 1. Multilingual Pipeline System ([`pipeline.py`](kokoro/pipeline.py))
+Comprehensive multilingual text processing:
+
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| [`KPipeline`](kokoro/pipeline.py:42) | `kokoro/pipeline.py:42` | Language-aware TTS pipeline |
+| [`ALIASES`](kokoro/pipeline.py:11) | `kokoro/pipeline.py:11` | Language code mapping system |
+| [`LANG_CODES`](kokoro/pipeline.py:23) | `kokoro/pipeline.py:23` | Supported language definitions |
+| [`waterfall_last`](kokoro/pipeline.py:184) | `kokoro/pipeline.py:184` | Intelligent text chunking algorithm |
+| [`en_tokenize`](kokoro/pipeline.py:205) | `kokoro/pipeline.py:205` | English-specific tokenization |
+
+**Purpose**: Handle 9 different languages with specialized processing
+
+#### 2. BERT-based Text Understanding ([`modules.py`](kokoro/modules.py))
+Advanced contextual text processing:
+
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| [`CustomAlbert`](kokoro/modules.py:180) | `kokoro/modules.py:180` | BERT-based contextual encoder |
+| BERT integration | [`model.py:51`](kokoro/model.py:51) | Contextual phoneme understanding |
+
+**Purpose**: Leverage pre-trained language models for better text understanding
+
+#### 3. ONNX-Compatible STFT ([`custom_stft.py`](kokoro/custom_stft.py))
+Deployment-optimized spectral processing:
+
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| [`CustomSTFT`](kokoro/custom_stft.py) | `kokoro/custom_stft.py` | Conv1D-based STFT for ONNX export |
+| `disable_complex` option | [`model.py:36`](kokoro/model.py:36) | ONNX compatibility flag |
+
+**Purpose**: Enable cross-platform deployment through ONNX export
+
+#### 4. Production-Ready CLI Interface ([`__main__.py`](kokoro/__main__.py))
+Complete command-line interface:
+
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| [`main()`](kokoro/__main__.py:68) | `kokoro/__main__.py:68` | CLI entry point |
+| [`generate_audio`](kokoro/__main__.py:39) | `kokoro/__main__.py:39` | Audio generation function |
+| [`generate_and_save_audio`](kokoro/__main__.py:50) | `kokoro/__main__.py:50` | File output handling |
+| Language selection | [`__main__.py:23`](kokoro/__main__.py:23) | Multi-language CLI support |
+
+**Purpose**: Ready-to-use command-line tool for production deployment
+
+#### 5. Efficient Voice Management
+Streamlined voice loading and caching:
+
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| [`load_voice`](kokoro/pipeline.py:167) | `kokoro/pipeline.py:167` | Voice loading with averaging support |
+| [`load_single_voice`](kokoro/pipeline.py:146) | `kokoro/pipeline.py:146` | Individual voice file loading |
+| Voice blending | [`pipeline.py:173`](kokoro/pipeline.py:173) | Multi-voice averaging |
+
+**Purpose**: Efficient voice management and blending capabilities
+
+#### 6. Optimized Model Architecture
+Streamlined components for efficiency:
+
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| [`KModel`](kokoro/model.py:11) | `kokoro/model.py:11` | Unified model class (82M params) |
+| [`KModelForONNX`](kokoro/model.py:139) | `kokoro/model.py:139` | ONNX export wrapper |
+| Direct inference | [`model.py:121`](kokoro/model.py:121) | Simplified inference path |
+
+**Purpose**: Optimized for deployment efficiency and resource constraints
+
+## Component Architecture Summary
+
+### StyleTTS2 Unique Advantages
+- **Research-Grade Quality**: Multiple discriminators and diffusion models
+- **Advanced Style Control**: Sophisticated style encoders and manipulation
+- **Experimental Flexibility**: Multiple vocoder options and training strategies
+- **Cutting-Edge Techniques**: Latest research in adversarial training and diffusion
+
+### Kokoro Unique Advantages
+- **Production Readiness**: Complete CLI interface and deployment tools
+- **Multilingual Support**: Comprehensive language processing pipeline
+- **Deployment Optimization**: ONNX compatibility and efficient architecture
+- **Contextual Understanding**: BERT-based text processing
+- **Resource Efficiency**: Streamlined 82M parameter architecture
+
 ## Conclusion
 
 Both Kokoro and StyleTTS2 demonstrate excellent engineering approaches to neural TTS, sharing fundamental components while optimizing for different objectives. The shared ISTFT-Net foundation provides both models with high-quality vocoding capabilities, while their divergent architectures reflect different priorities in the TTS landscape: production efficiency versus research-grade quality.
+
+**StyleTTS2** extends the base architecture with research-oriented components (discriminators, diffusion, advanced style modeling) for maximum quality, while **Kokoro** adds production-oriented components (multilingual pipeline, ONNX compatibility, CLI interface) for practical deployment.
 
 The comparison highlights how the same core TTS principles can be implemented with different complexity levels and optimization targets, making both models valuable for their respective use cases in the broader TTS ecosystem.
