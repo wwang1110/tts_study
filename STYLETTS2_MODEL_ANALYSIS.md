@@ -100,8 +100,11 @@ prosodic_style = predictor_encoder(reference_mel)
 d = self.text_encoder(texts, style, text_lengths, m)  # Style-conditioned text features
 
 # Duration prediction with LSTM
-x = nn.utils.rnn.pack_padded_sequence(d, input_lengths, batch_first=True)
+input_lengths = text_lengths.cpu().numpy()
+x = nn.utils.rnn.pack_padded_sequence(d, input_lengths, batch_first=True, enforce_sorted=False)
+self.lstm.flatten_parameters()
 x, _ = self.lstm(x)
+x, _ = nn.utils.rnn.pad_packed_sequence(x, batch_first=True)
 duration = self.duration_proj(nn.functional.dropout(x, 0.5, training=self.training))
 
 # F0 and Energy prediction with style conditioning
@@ -127,14 +130,16 @@ Style-Conditioned Features → Diffusion Model → Enhanced Features → Vocodin
 # Diffusion forward process
 diffusion = AudioDiffusionConditional(
     in_channels=1,
+    embedding_max_length=bert.config.max_position_embeddings,
     embedding_features=bert.config.hidden_size,
+    embedding_mask_proba=args.diffusion.embedding_mask_proba,
     channels=style_dim*2,
     context_features=style_dim*2,
 )
 
 # Enhanced feature generation
 enhanced_features = diffusion.sample(
-    noise, 
+    noise,
     embedding=text_embeddings,
     context=style_features
 )
@@ -145,10 +150,21 @@ enhanced_features = diffusion.sample(
 # Vocoder selection
 if args.decoder.type == "istftnet":
     from Modules.istftnet import Decoder
-    decoder = Decoder(...)
+    decoder = Decoder(dim_in=args.hidden_dim, style_dim=args.style_dim, dim_out=args.n_mels,
+            resblock_kernel_sizes = args.decoder.resblock_kernel_sizes,
+            upsample_rates = args.decoder.upsample_rates,
+            upsample_initial_channel=args.decoder.upsample_initial_channel,
+            resblock_dilation_sizes=args.decoder.resblock_dilation_sizes,
+            upsample_kernel_sizes=args.decoder.upsample_kernel_sizes,
+            gen_istft_n_fft=args.decoder.gen_istft_n_fft, gen_istft_hop_size=args.decoder.gen_istft_hop_size)
 else:
     from Modules.hifigan import Decoder
-    decoder = Decoder(...)
+    decoder = Decoder(dim_in=args.hidden_dim, style_dim=args.style_dim, dim_out=args.n_mels,
+            resblock_kernel_sizes = args.decoder.resblock_kernel_sizes,
+            upsample_rates = args.decoder.upsample_rates,
+            upsample_initial_channel=args.decoder.upsample_initial_channel,
+            resblock_dilation_sizes=args.decoder.resblock_dilation_sizes,
+            upsample_kernel_sizes=args.decoder.upsample_kernel_sizes)
 ```
 
 ### 4. Adversarial Training Pipeline
@@ -217,11 +233,11 @@ prosodic_style = predictor_encoder(reference_audio)
 #### 2. Adversarial Training with Multiple Discriminators
 ```python
 class MultiResSpecDiscriminator(nn.Module):
-    def __init__(self, fft_sizes=[1024, 2048, 512]):
+    def __init__(self, fft_sizes=[1024, 2048, 512], hop_sizes=[120, 240, 50], win_lengths=[600, 1200, 240]):
         self.discriminators = nn.ModuleList([
-            SpecDiscriminator(fft_sizes[0], hop_sizes[0], win_lengths[0]),
-            SpecDiscriminator(fft_sizes[1], hop_sizes[1], win_lengths[1]),
-            SpecDiscriminator(fft_sizes[2], hop_sizes[2], win_lengths[2])
+            SpecDiscriminator(fft_sizes[0], hop_sizes[0], win_lengths[0], window="hann_window"),
+            SpecDiscriminator(fft_sizes[1], hop_sizes[1], win_lengths[1], window="hann_window"),
+            SpecDiscriminator(fft_sizes[2], hop_sizes[2], win_lengths[2], window="hann_window")
         ])
 ```
 
@@ -269,12 +285,16 @@ if args.multispeaker:
 ```python
 # Random prosody augmentation during training
 if self.training:
-    F0_down = random.choice([0, 3, 7])
-    N_down = random.choice([0, 3, 7, 15])
+    downlist = [0, 3, 7]
+    F0_down = downlist[random.randint(0, 2)]
+    downlist = [0, 3, 7, 15]
+    N_down = downlist[random.randint(0, 3)]
     if F0_down:
-        F0_curve = F.conv1d(F0_curve.unsqueeze(1), 
-                           torch.ones(1, 1, F0_down).to('cuda'), 
+        F0_curve = nn.functional.conv1d(F0_curve.unsqueeze(1),
+                           torch.ones(1, 1, F0_down).to('cuda'),
                            padding=F0_down//2).squeeze(1) / F0_down
+    if N_down:
+        N = nn.functional.conv1d(N.unsqueeze(1), torch.ones(1, 1, N_down).to('cuda'), padding=N_down//2).squeeze(1) / N_down
 ```
 
 ## Usage Patterns
@@ -282,18 +302,18 @@ if self.training:
 ### Basic Usage
 ```python
 # Load pre-trained model
-model, optimizer, epoch, iters = load_checkpoint(
-    model, optimizer, checkpoint_path
+nets = build_model(args, text_aligner, pitch_extractor, bert)
+nets, optimizer, epoch, iters = load_checkpoint(
+    nets, optimizer, checkpoint_path
 )
 
 # Synthesize speech
 with torch.no_grad():
-    audio = model.synthesize(
-        text=phonemes,
-        reference_audio=reference_mel,
-        alpha=1.0,  # Style strength
-        beta=1.0    # Diffusion strength
-    )
+    # StyleTTS2 doesn't have a single synthesize method
+    # Instead it uses the forward pass of individual components
+    text_embeddings = nets.text_encoder(phonemes, input_lengths, text_mask)
+    style = nets.style_encoder(reference_mel)
+    audio = nets.decoder(text_embeddings, F0_curve, N, style)
 ```
 
 ### Advanced Style Control
@@ -362,29 +382,32 @@ for batch in dataloader:
 ### Production Deployment
 ```python
 # Optimized inference setup
-model.eval()
-for key in model:
-    model[key].eval()
+nets.eval()
+for key in nets:
+    nets[key].eval()
 
 # Remove weight normalization for faster inference
-for module in model.values():
-    if hasattr(module, 'remove_weight_norm'):
-        module.remove_weight_norm()
+for key in nets:
+    if hasattr(nets[key], 'remove_weight_norm'):
+        nets[key].remove_weight_norm()
 
 # Inference with reduced precision
 with torch.cuda.amp.autocast():
-    audio = model.synthesize(text, reference_audio)
+    # Use individual component forward passes
+    text_embeddings = nets.text_encoder(text, input_lengths, text_mask)
+    style = nets.style_encoder(reference_audio)
+    audio = nets.decoder(text_embeddings, F0_curve, N, style)
 ```
 
 ### Memory Optimization
 ```python
-# Gradient checkpointing for training
-model.gradient_checkpointing_enable()
-
 # Mixed precision training
 scaler = torch.cuda.amp.GradScaler()
 with torch.cuda.amp.autocast():
-    loss = compute_loss(model, batch)
+    loss = compute_loss(nets, batch)
+    
+# Note: StyleTTS2 doesn't use gradient_checkpointing_enable()
+# Memory optimization is handled through other means
 ```
 
 ## Comparison with Other TTS Systems

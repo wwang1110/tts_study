@@ -4,6 +4,8 @@
 
 Kokoro is a multilingual neural text-to-speech (TTS) system that converts text to natural-sounding speech across 9 different languages. The system uses a sophisticated pipeline combining phoneme-based text processing, neural acoustic modeling, and advanced vocoding techniques.
 
+**Note**: This analysis covers the inference-only implementation. The Kokoro repository contains pre-trained models and inference code, but does not include training scripts or loss functions.
+
 ## Supported Languages
 
 - **English**: American English (`a`) and British English (`b`)
@@ -41,11 +43,11 @@ Language-aware processing pipeline that handles:
 - **Language-specific Processing**: Tailored handling per language
 
 #### 3. Neural Vocoder ([`istftnet.py`](kokoro/istftnet.py))
-Advanced vocoder architecture featuring:
-- **Generator**: Converts acoustic features to audio
-- **STFT-based Processing**: Uses Short-Time Fourier Transform
-- **AdaIN (Adaptive Instance Normalization)**: Style conditioning
-- **HiFi-GAN inspired architecture**: High-quality audio synthesis
+ISTFT-Net vocoder architecture adapted from StyleTTS2:
+- **Generator**: Converts acoustic features to audio using harmonic + noise modeling
+- **STFT-based Processing**: Uses Short-Time Fourier Transform for spectral synthesis
+- **AdaIN (Adaptive Instance Normalization)**: Style conditioning with ONNX-compatible modifications
+- **Source Modeling**: SourceModuleHnNSF for periodic and aperiodic excitation
 
 #### 4. Custom STFT ([`custom_stft.py`](kokoro/custom_stft.py))
 ONNX-compatible STFT implementation:
@@ -89,7 +91,7 @@ Input Text → Language Detection → G2P Processing → Phonemes
 1. **Language-specific G2P**: Each language uses specialized phonemizers
    - English: Uses [`misaki`](https://github.com/hexgrad/misaki) with espeak fallback
    - Other languages: espeak-ng based processing
-2. **Text Chunking**: Long texts split into manageable segments (~400-510 characters)
+2. **Text Chunking**: Long texts split into manageable segments (~510 phoneme characters for English, ~400 text characters for other languages)
 3. **Phoneme Tokenization**: Convert phonemes to model input tokens
 
 **Code Flow:**
@@ -110,7 +112,7 @@ else:  # Other languages
 ```python
 # In KPipeline.load_voice()
 pack = torch.load(voice_file, weights_only=True)
-# Voice tensor shape: [256] where first 128 = decoder style, last 128 = prosody style
+# Voice tensor contains style embeddings for conditioning
 ref_s = pack.to(model.device)
 ```
 
@@ -150,11 +152,11 @@ x, _ = self.predictor.lstm(d)
 # Duration prediction
 duration = self.predictor.duration_proj(x)
 duration = torch.sigmoid(duration).sum(axis=-1) / speed
-pred_dur = torch.round(duration).clamp(min=1).long()
+pred_dur = torch.round(duration).clamp(min=1).long().squeeze()
 
 # Create alignment matrix from predicted durations
-indices = torch.repeat_interleave(torch.arange(input_ids.shape[1], device=device), pred_dur)
-pred_aln_trg = torch.zeros((input_ids.shape[1], indices.shape[0]), device=device)
+indices = torch.repeat_interleave(torch.arange(input_ids.shape[1], device=self.device), pred_dur)
+pred_aln_trg = torch.zeros((input_ids.shape[1], indices.shape[0]), device=self.device)
 pred_aln_trg[indices, torch.arange(indices.shape[0])] = 1
 
 # Align features for F0/Energy prediction
@@ -210,16 +212,23 @@ audio = self.decoder(asr, F0_pred, N_pred, ref_s[:, :128])
 
 ### Key Innovations
 
-#### 1. Adaptive Instance Normalization (AdaIN)
+#### 1. Adaptive Instance Normalization (AdaIN) - ONNX Compatible
 ```python
 class AdaIN1d(nn.Module):
+    def __init__(self, style_dim, num_features):
+        super().__init__()
+        # affine=True for ONNX compatibility (avoids channel dimension loss bug)
+        self.norm = nn.InstanceNorm1d(num_features, affine=True)
+        self.fc = nn.Linear(style_dim, num_features*2)
+    
     def forward(self, x, s):
         h = self.fc(s)
         gamma, beta = torch.chunk(h, chunks=2, dim=1)
         return (1 + gamma) * self.norm(x) + beta
 ```
 - **Purpose**: Style conditioning throughout the network
-- **Benefit**: Enables voice cloning and style transfer
+- **ONNX Modification**: Uses `affine=True` to prevent channel dimension loss during export
+- **Benefit**: Enables voice cloning and style transfer with deployment compatibility
 
 #### 2. Custom STFT Implementation
 ```python
@@ -232,10 +241,11 @@ class CustomSTFT(nn.Module):
 - **Purpose**: ONNX-compatible spectral processing
 - **Benefit**: Enables deployment across platforms
 
-#### 3. HiFi-GAN Inspired Vocoder
-- **Multi-scale Processing**: Different temporal resolutions
-- **Adversarial Training**: High-quality audio generation
-- **Efficient Architecture**: 82M parameters total
+#### 3. ISTFT-Net Vocoder (Adapted from StyleTTS2)
+- **Harmonic + Noise Source**: Uses SourceModuleHnNSF for excitation generation
+- **Style Conditioning**: AdaIN normalization throughout the generator
+- **ONNX Compatibility**: Modified for deployment with disable_complex flag
+- **Efficient Architecture**: Part of the 82M parameter total model
 
 ## Usage Patterns
 
