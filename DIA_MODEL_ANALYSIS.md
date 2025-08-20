@@ -2,7 +2,9 @@
 
 ## Overview
 
-Dia is a neural text-to-speech (TTS) system that converts text to natural-sounding speech using an encoder-decoder transformer architecture with audio codec integration. The system uses byte-level text encoding, multi-channel audio generation with delay patterns, and DAC (Descript Audio Codec) for high-quality audio synthesis.
+Dia is a neural text-to-speech (TTS) system that converts text to natural-sounding speech using an encoder-decoder transformer architecture with audio codec integration. **Critically, Dia does NOT generate mel spectrograms** - it directly generates audio codec tokens that are decoded to waveforms using DAC (Descript Audio Codec).
+
+**Key Architectural Difference**: Unlike traditional TTS models (Kokoro, StyleTTS2) that generate mel spectrograms as an intermediate representation, Dia completely bypasses this step and generates audio codec tokens directly from text.
 
 **Note**: This analysis covers the inference implementation. The Dia repository contains pre-trained models and inference code optimized for production deployment.
 
@@ -203,27 +205,33 @@ pred_BC = _sample_next_token(
 )
 ```
 
-### 6. Audio Synthesis (DAC Integration)
+### 6. Direct Audio Synthesis (NO Mel Spectrogram Generation)
 
 ```
-Generated Codes → Delay Reversion → DAC Decoding → Final Audio Waveform
+Generated Codec Tokens → Delay Reversion → DAC Decoding → Final Audio Waveform
 ```
+
+**CRITICAL: No Mel Spectrogram Step** - Dia directly converts codec tokens to audio, completely bypassing mel spectrogram generation.
 
 **Process**:
 1. **Delay Reversion**: Remove channel delays to restore temporal alignment
-2. **DAC Decoding**: Convert discrete codes to continuous audio waveform
+2. **Direct DAC Decoding**: Convert discrete codec tokens directly to continuous audio waveform
 3. **Quality Control**: Clamp invalid codes and ensure proper sample rate
 
 **Code Flow**:
 ```python
-# Revert delay pattern
+# Revert delay pattern (still working with codec tokens, NOT mel spectrograms)
 codebook = revert_audio_delay(generated_codes, pad_value=audio_pad_value, precomp=revert_precomp, T=seq_length)
 
-# DAC decoding to waveform
+# Direct DAC decoding: codec tokens → audio waveform (NO mel spectrogram involved)
 audio_codes = codebook.unsqueeze(0).transpose(1, 2)  # [1, C, T]
-audio_values, _, _ = self.dac_model.quantizer.from_codes(audio_codes)
+audio_values, _, _ = self.dac_model.quantizer.from_codes(audio_codes)  # Direct codec→audio
 audio_values = self.dac_model.decode(audio_values)  # Final 44.1kHz waveform
 ```
+
+**Workflow Comparison**:
+- **Traditional TTS**: Text → Mel Spectrogram → Vocoder → Audio
+- **Dia TTS**: Text → Audio Codec Tokens → DAC Decoder → Audio
 
 ## Technical Architecture Details
 
@@ -393,8 +401,53 @@ config = DiaConfig(
 )
 ```
 
+## Comparison with Traditional TTS Models
+
+### Fundamental Architectural Difference
+
+**The most critical difference**: Dia does NOT generate mel spectrograms, while traditional TTS models (Kokoro, StyleTTS2) do.
+
+#### Traditional TTS Workflow (Kokoro/StyleTTS2):
+```
+Text → Phonemes → Mel Spectrogram → Neural Vocoder → Audio Waveform
+```
+
+#### Dia TTS Workflow:
+```
+Text → Byte Tokens → Audio Codec Tokens → DAC Decoder → Audio Waveform
+```
+
+### Key Differences from Kokoro/StyleTTS2
+
+| Aspect | Kokoro/StyleTTS2 | Dia |
+|--------|------------------|-----|
+| **Intermediate Representation** | **Mel Spectrogram** | **Audio Codec Tokens** |
+| **Text Processing** | Phoneme-based | Byte-level UTF-8 |
+| **Model Size** | 82M-200M parameters | 1.6B parameters |
+| **Architecture** | Single-pass/Diffusion | Encoder-Decoder Transformer |
+| **Audio Synthesis** | ISTFT-Net Vocoder | DAC Neural Codec |
+| **Generation** | Direct/Adversarial | Autoregressive |
+| **Conditioning** | AdaIN/Style Vectors | Classifier-Free Guidance |
+
+### Advantages of Dia's Approach
+
+1. **No Vocoder Artifacts**: Direct codec generation eliminates traditional vocoder limitations
+2. **End-to-End Optimization**: Single model handles entire text-to-audio pipeline
+3. **Language Agnostic**: Byte-level processing works with any UTF-8 text
+4. **High Quality**: Large-scale architecture with advanced conditioning
+5. **Unified Training**: No separate vocoder training required
+
+### Trade-offs
+
+1. **Computational Cost**: 1.6B parameters require significant compute resources
+2. **Memory Usage**: Large model and multi-channel generation increase memory needs
+3. **Inference Speed**: Autoregressive generation slower than single-pass models
+4. **Complexity**: More sophisticated architecture and inference pipeline
+
 ## Conclusion
 
-Dia represents a modern approach to neural text-to-speech synthesis, leveraging transformer architectures with advanced techniques like classifier-free guidance, multi-channel generation with delay patterns, and high-quality audio codecs. The system's design prioritizes both audio quality and deployment efficiency, making it suitable for production applications requiring high-fidelity speech synthesis.
+Dia represents a paradigm shift in neural text-to-speech synthesis by **completely eliminating mel spectrogram generation**. This fundamental architectural change, combined with transformer architectures, classifier-free guidance, multi-channel generation with delay patterns, and DAC integration, creates a new approach to high-quality speech synthesis.
 
-The combination of byte-level text encoding, sophisticated attention mechanisms, and DAC integration creates a robust pipeline capable of generating natural-sounding speech with fine-grained control over generation parameters. The modular architecture and comprehensive configuration system enable flexible deployment across various hardware platforms and use cases.
+The system's design prioritizes audio quality through direct codec generation while maintaining deployment efficiency through optimized inference techniques. The combination of byte-level text encoding, sophisticated attention mechanisms, and DAC integration creates a robust pipeline capable of generating natural-sounding speech with fine-grained control over generation parameters.
+
+**Key Innovation**: By bypassing mel spectrograms entirely and generating audio codec tokens directly from text, Dia eliminates a major source of artifacts in traditional TTS systems while enabling end-to-end optimization of the entire text-to-audio pipeline.
