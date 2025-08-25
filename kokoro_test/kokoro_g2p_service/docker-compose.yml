@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  g2p-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: kokoro-g2p-service:latest
+    container_name: kokoro-g2p-service
+    ports:
+      - "5000:5000"
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    labels:
+      - "com.kokoro.service=g2p"
+      - "com.kokoro.license=GPL-isolated"
+      - "com.kokoro.description=GPL-isolated G2P service for Kokoro TTS"
+
+networks:
+  default:
+    name: kokoro-network
