@@ -75,7 +75,8 @@ def demo_g2p_service():
     # Check if G2P service is available
     try:
         from g2p_client import check_service_health
-        if not check_service_health():
+        service_url = "http://localhost:5001"
+        if not check_service_health(service_url):
             print("❌ G2P service is not available!")
             print("Start it with: python g2p_service.py")
             return False
@@ -86,25 +87,27 @@ def demo_g2p_service():
     # Initialize safe pipeline
     pipeline = SafePipeline()
     
-    # Example texts
+    # Example texts with different languages
     text_examples = [
-        "Hello world, this is a test.",
-        "Kokoro is an open-weight TTS model.",
-        "License-safe text-to-speech synthesis.",
-        "Production ready commercial application."
+        ("Hello world, this is a test.", "en-US"),
+        ("Kokoro is an open-weight TTS model.", "en-GB"),
+        ("Hola mundo, esto es una prueba.", "es"),
+        ("Bonjour le monde, ceci est un test.", "fr-FR"),
+        ("Olá mundo, este é um teste.", "pt-BR")
     ]
     
-    print(f"\nGenerating audio for {len(text_examples)} examples...")
+    print(f"\nGenerating audio for {len(text_examples)} examples in multiple languages...")
     
-    for i, text in enumerate(text_examples):
+    for i, (text, lang) in enumerate(text_examples):
         print(f"\n{i+1}. Text: {text}")
+        print(f"   Language: {lang}")
         
         try:
-            # Convert text to audio via G2P service
-            audio = pipeline.from_text(text, voice='af_heart')
+            # Convert text to audio via G2P service with specified language
+            audio = pipeline.from_text(text, voice='af_heart', lang=lang, g2p_url=service_url)
             
             # Save audio file
-            filename = f"safe_demo_service_{i+1}.wav"
+            filename = f"safe_demo_service_{lang}_{i+1}.wav"
             sf.write(filename, audio.numpy(), 24000)
             print(f"   Saved: {filename}")
             
@@ -129,37 +132,27 @@ def demo_convenience_function():
 
 def main():
     parser = argparse.ArgumentParser(description="License-Safe Kokoro Demo")
-    parser.add_argument(
-        '--method', 
-        choices=['phonemes', 'service', 'both'], 
-        default='phonemes',
-        help='Demo method to use'
-    )
-    
     args = parser.parse_args()
     
     print("🎵 License-Safe Kokoro TTS Demo")
     print("=" * 50)
-    print("This demo shows GPL-free usage patterns for production applications.")
+    print("This demo uses G2P service for license-safe text-to-speech synthesis.")
     print()
     
     try:
-        if args.method in ['phonemes', 'both']:
-            demo_direct_phonemes()
-            demo_convenience_function()
-        
-        if args.method in ['service', 'both']:
-            print("\n" + "=" * 50)
-            success = demo_g2p_service()
-            if not success and args.method == 'service':
-                print("\nTip: Try --method phonemes for a GPL-free demo")
+        # Always use G2P service method
+        success = demo_g2p_service()
+        if not success:
+            print("\n❌ G2P service is not available!")
+            print("Start it with: python kokoro_test/g2p_service.py")
+            return 1
         
         print("\n" + "=" * 50)
         print("🎉 Demo completed!")
-        print("\nLicense compliance notes:")
-        print("• Direct phonemes: 100% GPL-free, recommended for production")
+        print("\nLicense compliance:")
         print("• G2P service: GPL isolated in separate process")
-        print("• Both approaches are safe for commercial use")
+        print("• Production code: 100% GPL-free")
+        print("• Safe for commercial use")
         
     except KeyboardInterrupt:
         print("\n\nDemo interrupted by user.")

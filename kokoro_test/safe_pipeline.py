@@ -121,6 +121,7 @@ class SafePipeline:
         self,
         text: str,
         voice: Union[str, torch.FloatTensor],
+        lang: str = "en-US",
         g2p_url: str = "http://localhost:5000",
         speed: float = 1.0
     ) -> torch.FloatTensor:
@@ -130,6 +131,7 @@ class SafePipeline:
         Args:
             text: Input text
             voice: Voice name or tensor
+            lang: Language code (en-US, en-GB, pt-BR, fr-FR, es, hi, it, ja, zh)
             g2p_url: URL of G2P service
             speed: Speech speed multiplier
             
@@ -148,7 +150,7 @@ class SafePipeline:
         try:
             response = requests.post(
                 f"{g2p_url}/convert",
-                json={"text": text, "lang": "en"},
+                json={"text": text, "lang": lang},
                 timeout=30
             )
             response.raise_for_status()
