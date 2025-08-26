@@ -32,6 +32,9 @@ class Config:
         self.max_batch_size = int(os.getenv("MAX_BATCH_SIZE", "50"))
         self.max_tokens_per_chunk = int(os.getenv("MAX_TOKENS_PER_CHUNK", "400"))
         self.min_tokens_per_chunk = int(os.getenv("MIN_TOKENS_PER_CHUNK", "100"))
+        # First chunk optimization for faster time to first token
+        self.first_chunk_max_tokens = int(os.getenv("FIRST_CHUNK_MAX_TOKENS", "50"))
+        self.first_chunk_min_tokens = int(os.getenv("FIRST_CHUNK_MIN_TOKENS", "25"))
         self.host = os.getenv("HOST", "0.0.0.0")
         self.port = int(os.getenv("PORT", "8880"))
 
@@ -64,22 +67,25 @@ class StreamingTTSRequest(BaseModel):
     speed: float = Field(default=1.0, ge=0.25, le=4.0, description="Speech speed")
     format: str = Field(default="wav", description="Audio format")
 
-# Simple smart_split implementation
+# Optimized smart_split implementation for faster time to first token
 async def simple_smart_split(
     text: str,
     max_tokens: Optional[int] = None,
     min_tokens: Optional[int] = None
 ) -> AsyncGenerator[str, None]:
     """
-    Simple version of smart_split that breaks text into chunks.
+    Optimized version of smart_split that prioritizes fast time to first token.
+    
+    The first chunk is kept small (25-50 tokens, ideally one sentence) for faster
+    initial audio generation, while subsequent chunks use normal sizing for quality.
     
     Args:
         text: Input text to split
-        max_tokens: Maximum tokens per chunk (uses config default if None)
-        min_tokens: Minimum tokens per chunk (uses config default if None)
+        max_tokens: Maximum tokens per chunk for non-first chunks (uses config default if None)
+        min_tokens: Minimum tokens per chunk for non-first chunks (uses config default if None)
         
     Yields:
-        Text chunks
+        Text chunks (first chunk optimized for speed, rest for quality)
     """
     # Use config defaults if not specified
     if max_tokens is None:
@@ -91,9 +97,15 @@ async def simple_smart_split(
     max_chars = max_tokens * 4
     min_chars = min_tokens * 4
     
+    # First chunk optimization parameters
+    first_chunk_max_chars = config.first_chunk_max_tokens * 4
+    first_chunk_min_chars = config.first_chunk_min_tokens * 4
+    
     # Handle pause tags first
     pause_pattern = re.compile(r'\[pause:(\d+(?:\.\d+)?)s\]', re.IGNORECASE)
     parts = pause_pattern.split(text)
+    
+    is_first_text_chunk = True
     
     for i, part in enumerate(parts):
         if i % 2 == 1:  # This is a pause duration
@@ -107,6 +119,82 @@ async def simple_smart_split(
         # Split text part into sentences
         sentences = re.split(r'([.!?;:])\s*', part)
         
+        # Handle first chunk specially for faster time to first token
+        if is_first_text_chunk and sentences:
+            is_first_text_chunk = False
+            
+            # Try to get the first sentence
+            first_sentence = sentences[0].strip() if sentences[0] else ""
+            first_punct = sentences[1] if len(sentences) > 1 else ""
+            
+            if first_sentence:
+                first_full_sentence = first_sentence + first_punct
+                
+                # Check if first sentence fits within first chunk limits
+                if len(first_full_sentence) <= first_chunk_max_chars:
+                    # Perfect! First sentence fits in first chunk
+                    yield first_full_sentence.strip()
+                    
+                    # Continue with remaining sentences using normal logic
+                    remaining_sentences = sentences[2:] if len(sentences) > 2 else []
+                else:
+                    # First sentence is too long, truncate at word boundary
+                    words = first_sentence.split()
+                    truncated_sentence = ""
+                    
+                    for word in words:
+                        test_sentence = truncated_sentence + (" " if truncated_sentence else "") + word
+                        if len(test_sentence) <= first_chunk_max_chars - len(first_punct):
+                            truncated_sentence = test_sentence
+                        else:
+                            break
+                    
+                    if truncated_sentence:
+                        # Yield truncated first chunk
+                        yield (truncated_sentence + first_punct).strip()
+                        
+                        # Put remaining words back into sentences for normal processing
+                        remaining_words = first_sentence[len(truncated_sentence):].strip()
+                        if remaining_words:
+                            remaining_sentences = [remaining_words + first_punct] + sentences[2:]
+                        else:
+                            remaining_sentences = sentences[2:] if len(sentences) > 2 else []
+                    else:
+                        # Edge case: even first word is too long, just yield it
+                        yield first_full_sentence.strip()
+                        remaining_sentences = sentences[2:] if len(sentences) > 2 else []
+                
+                # Process remaining sentences with normal chunking logic
+                if remaining_sentences:
+                    current_chunk = ""
+                    for j in range(0, len(remaining_sentences), 2):
+                        sentence = remaining_sentences[j].strip() if j < len(remaining_sentences) else ""
+                        punct = remaining_sentences[j + 1] if j + 1 < len(remaining_sentences) else ""
+                        
+                        if not sentence:
+                            continue
+                            
+                        full_sentence = sentence + punct
+                        
+                        # Check if adding this sentence exceeds max_chars
+                        if len(current_chunk) + len(full_sentence) > max_chars and len(current_chunk) >= min_chars:
+                            # Yield current chunk and start new one
+                            if current_chunk.strip():
+                                yield current_chunk.strip()
+                            current_chunk = full_sentence
+                        else:
+                            # Add to current chunk
+                            if current_chunk:
+                                current_chunk += " " + full_sentence
+                            else:
+                                current_chunk = full_sentence
+                    
+                    # Don't forget the last chunk
+                    if current_chunk.strip():
+                        yield current_chunk.strip()
+            continue
+        
+        # Normal processing for non-first chunks
         current_chunk = ""
         for j in range(0, len(sentences), 2):
             sentence = sentences[j].strip()
@@ -239,7 +327,9 @@ async def health_check():
             "g2p_timeout": config.g2p_timeout,
             "max_batch_size": config.max_batch_size,
             "max_tokens_per_chunk": config.max_tokens_per_chunk,
-            "min_tokens_per_chunk": config.min_tokens_per_chunk
+            "min_tokens_per_chunk": config.min_tokens_per_chunk,
+            "first_chunk_max_tokens": config.first_chunk_max_tokens,
+            "first_chunk_min_tokens": config.first_chunk_min_tokens
         }
     }
 
@@ -513,6 +603,8 @@ async def get_config():
         "max_batch_size": config.max_batch_size,
         "max_tokens_per_chunk": config.max_tokens_per_chunk,
         "min_tokens_per_chunk": config.min_tokens_per_chunk,
+        "first_chunk_max_tokens": config.first_chunk_max_tokens,
+        "first_chunk_min_tokens": config.first_chunk_min_tokens,
         "host": config.host,
         "port": config.port
     }
@@ -521,4 +613,5 @@ if __name__ == "__main__":
     import uvicorn
     print(f"🚀 Starting TTS Service with G2P endpoint: {config.g2p_url}")
     print(f"📊 Configuration: max_batch={config.max_batch_size}, chunk_tokens={config.min_tokens_per_chunk}-{config.max_tokens_per_chunk}")
+    print(f"⚡ First chunk optimization: {config.first_chunk_min_tokens}-{config.first_chunk_max_tokens} tokens for faster time to first token")
     uvicorn.run(app, host=config.host, port=config.port)
