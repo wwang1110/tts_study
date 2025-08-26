@@ -23,15 +23,28 @@ import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from safe_pipeline import SafePipeline
 
+# Configuration
+class Config:
+    """Service configuration"""
+    def __init__(self):
+        self.g2p_url = os.getenv("G2P_SERVICE_URL", "http://localhost:5000")
+        self.g2p_timeout = int(os.getenv("G2P_TIMEOUT", "30"))
+        self.max_batch_size = int(os.getenv("MAX_BATCH_SIZE", "50"))
+        self.max_tokens_per_chunk = int(os.getenv("MAX_TOKENS_PER_CHUNK", "400"))
+        self.min_tokens_per_chunk = int(os.getenv("MIN_TOKENS_PER_CHUNK", "100"))
+        self.host = os.getenv("HOST", "0.0.0.0")
+        self.port = int(os.getenv("PORT", "8880"))
+
+# Global configuration and pipeline
+config = Config()
+pipeline = None
+
 # Initialize FastAPI app
 app = FastAPI(
     title="License-Safe Kokoro TTS Service",
     description="TTS service using GPL-isolated G2P service",
     version="1.0.0"
 )
-
-# Global pipeline instance
-pipeline = None
 
 # Pydantic models
 class TTSRequest(BaseModel):
@@ -54,20 +67,26 @@ class StreamingTTSRequest(BaseModel):
 # Simple smart_split implementation
 async def simple_smart_split(
     text: str,
-    max_tokens: int = 400,
-    min_tokens: int = 100
+    max_tokens: Optional[int] = None,
+    min_tokens: Optional[int] = None
 ) -> AsyncGenerator[str, None]:
     """
     Simple version of smart_split that breaks text into chunks.
     
     Args:
         text: Input text to split
-        max_tokens: Maximum tokens per chunk (approximated by character count / 4)
-        min_tokens: Minimum tokens per chunk
+        max_tokens: Maximum tokens per chunk (uses config default if None)
+        min_tokens: Minimum tokens per chunk (uses config default if None)
         
     Yields:
         Text chunks
     """
+    # Use config defaults if not specified
+    if max_tokens is None:
+        max_tokens = config.max_tokens_per_chunk
+    if min_tokens is None:
+        min_tokens = config.min_tokens_per_chunk
+    
     # Simple approximation: 1 token ≈ 4 characters
     max_chars = max_tokens * 4
     min_chars = min_tokens * 4
@@ -116,15 +135,19 @@ async def simple_smart_split(
             yield current_chunk.strip()
 
 # G2P Service Integration
-async def text_to_phonemes(text: str, language: str, g2p_url: str = "http://localhost:5000") -> str:
-    """Convert text to phonemes using G2P service"""
+async def text_to_phonemes(text: str, language: str, g2p_url: Optional[str] = None) -> str:
+    """Convert text to phonemes using configurable G2P service"""
     import requests
+    
+    # Use config default if not specified
+    if g2p_url is None:
+        g2p_url = config.g2p_url
     
     try:
         response = requests.post(
             f"{g2p_url}/convert",
             json={"text": text, "lang": language},
-            timeout=30
+            timeout=config.g2p_timeout
         )
         response.raise_for_status()
         
@@ -135,7 +158,7 @@ async def text_to_phonemes(text: str, language: str, g2p_url: str = "http://loca
         return data['phonemes']
         
     except requests.RequestException as e:
-        raise RuntimeError(f"G2P service unavailable: {e}")
+        raise RuntimeError(f"G2P service unavailable at {g2p_url}: {e}")
     except ImportError:
         raise RuntimeError("requests library required for G2P service. Install with: pip install requests")
 
@@ -199,7 +222,7 @@ async def health_check():
     g2p_available = True
     try:
         import requests
-        response = requests.get("http://localhost:5000/health", timeout=5)
+        response = requests.get(f"{config.g2p_url}/health", timeout=5)
         g2p_available = response.status_code == 200
     except:
         g2p_available = False
@@ -208,8 +231,16 @@ async def health_check():
         "status": "healthy" if pipeline else "unhealthy",
         "pipeline_ready": pipeline is not None,
         "g2p_service_available": g2p_available,
+        "g2p_service_url": config.g2p_url,
         "supported_languages": ["en-US", "en-GB", "es", "fr-FR", "pt-BR", "hi", "it", "ja", "zh"],
-        "supported_formats": ["wav", "pcm"]
+        "supported_formats": ["wav", "pcm"],
+        "config": {
+            "g2p_url": config.g2p_url,
+            "g2p_timeout": config.g2p_timeout,
+            "max_batch_size": config.max_batch_size,
+            "max_tokens_per_chunk": config.max_tokens_per_chunk,
+            "min_tokens_per_chunk": config.min_tokens_per_chunk
+        }
     }
 
 # Mode 1: Single TTS
@@ -264,8 +295,8 @@ async def batch_tts(batch_request: BatchTTSRequest):
     if not pipeline:
         raise HTTPException(status_code=503, detail="TTS pipeline not ready")
     
-    if len(batch_request.requests) > 50:
-        raise HTTPException(status_code=400, detail="Maximum 50 requests per batch")
+    if len(batch_request.requests) > config.max_batch_size:
+        raise HTTPException(status_code=400, detail=f"Maximum {config.max_batch_size} requests per batch")
     
     try:
         # Create ZIP archive in memory
@@ -472,6 +503,22 @@ async def test_g2p(request: dict):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"G2P conversion failed: {str(e)}")
 
+# Configuration endpoint
+@app.get("/config")
+async def get_config():
+    """Get current service configuration"""
+    return {
+        "g2p_url": config.g2p_url,
+        "g2p_timeout": config.g2p_timeout,
+        "max_batch_size": config.max_batch_size,
+        "max_tokens_per_chunk": config.max_tokens_per_chunk,
+        "min_tokens_per_chunk": config.min_tokens_per_chunk,
+        "host": config.host,
+        "port": config.port
+    }
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8880)
+    print(f"🚀 Starting TTS Service with G2P endpoint: {config.g2p_url}")
+    print(f"📊 Configuration: max_batch={config.max_batch_size}, chunk_tokens={config.min_tokens_per_chunk}-{config.max_tokens_per_chunk}")
+    uvicorn.run(app, host=config.host, port=config.port)
