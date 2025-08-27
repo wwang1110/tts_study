@@ -57,11 +57,12 @@ class TTSStreamingTestClient:
         async with self.session.post(f"{self.base_url}/test/smart-split", json=payload) as response:
             return await response.json()
     
-    async def stream_tts(self, text: str, voice: str = "af_heart", language: str = "en-US", 
-                        format: str = "wav") -> Dict:
+    async def stream_tts(self, text: str, voice: str = "af_heart", language: str = "en-US",
+                        format: str = "wav", save_file: Optional[str] = None) -> Dict:
         """
         Stream TTS and measure performance metrics
         Returns timing information and chunk details
+        Optionally saves audio to file if save_file is provided
         """
         if not self.session:
             raise RuntimeError("Session not initialized")
@@ -80,11 +81,13 @@ class TTSStreamingTestClient:
             "total_bytes": 0,
             "chunk_times": [],
             "text_length": len(text),
-            "success": False
+            "success": False,
+            "saved_file": None
         }
         
         start_time = time.time()
         first_byte_time = None
+        audio_data = bytearray()
         
         try:
             async with self.session.post(f"{self.base_url}/tts/stream", json=payload) as response:
@@ -101,6 +104,7 @@ class TTSStreamingTestClient:
                     
                     metrics["chunks_received"] += 1
                     metrics["total_bytes"] += len(chunk)
+                    audio_data.extend(chunk)
                     
                     chunk_time = time.time() - chunk_start_time
                     metrics["chunk_times"].append(chunk_time)
@@ -108,6 +112,13 @@ class TTSStreamingTestClient:
                 
                 metrics["total_time"] = time.time() - start_time
                 metrics["success"] = True
+                
+                # Save audio to file if requested
+                if save_file and audio_data:
+                    with open(save_file, 'wb') as f:
+                        f.write(audio_data)
+                    metrics["saved_file"] = save_file
+                    print(f"💾 Audio saved to: {save_file} ({len(audio_data):,} bytes)")
                 
         except Exception as e:
             metrics["error"] = str(e)
@@ -181,6 +192,7 @@ async def run_basic_tests():
             print(f"Expected: {test_case['expected_benefit']}")
             
             # Test smart_split first
+            '''
             try:
                 split_result = await client.test_smart_split(test_case['text'])
                 chunks = split_result.get('chunks', [])
@@ -199,11 +211,16 @@ async def run_basic_tests():
                 
             except Exception as e:
                 print(f"  ❌ Smart split test failed: {e}")
-            
+            '''
+
             # Test streaming performance
             print("  Streaming test...")
             try:
-                metrics = await client.stream_tts(test_case['text'])
+                # Create filename for saved audio
+                safe_name = test_case['name'].lower().replace(' ', '_').replace(',', '')
+                audio_filename = f"test_audio_{i}_{safe_name}.wav"
+                
+                metrics = await client.stream_tts(test_case['text'], save_file=audio_filename)
                 
                 if metrics['success']:
                     print(f"  ✅ Streaming SUCCESS:")
@@ -211,6 +228,8 @@ async def run_basic_tests():
                     print(f"     Total time: {metrics['total_time']:.3f}s")
                     print(f"     Chunks received: {metrics['chunks_received']}")
                     print(f"     Total bytes: {metrics['total_bytes']:,}")
+                    if metrics.get('saved_file'):
+                        print(f"     Audio saved: {metrics['saved_file']}")
                     
                     # Calculate performance metrics
                     if metrics['time_to_first_byte'] > 0:

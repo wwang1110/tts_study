@@ -9,13 +9,19 @@ import base64
 import io
 import re
 import zipfile
+from contextlib import asynccontextmanager
 from typing import List, Optional, AsyncGenerator, Tuple
 import wave
 import numpy as np
+import logging
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel, Field
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Import our license-safe pipeline
 import sys
@@ -42,11 +48,30 @@ class Config:
 config = Config()
 pipeline = None
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan event handler for startup and shutdown"""
+    # Startup
+    global pipeline
+    try:
+        logger.info("Initializing SafePipeline...")
+        pipeline = SafePipeline()
+        logger.info("✅ SafePipeline initialized successfully")
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize SafePipeline: {e}")
+        raise
+    
+    yield
+    
+    # Shutdown (if needed)
+    logger.info("TTS service shutting down...")
+
 # Initialize FastAPI app
 app = FastAPI(
     title="License-Safe Kokoro TTS Service",
     description="TTS service using GPL-isolated G2P service",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 # Pydantic models
@@ -253,18 +278,27 @@ async def text_to_phonemes(text: str, language: str, g2p_url: Optional[str] = No
 # Utility functions
 def audio_to_wav_bytes(audio_tensor, sample_rate=24000):
     """Convert audio tensor to WAV bytes"""
+    logger.debug(f"Converting audio to WAV: sample_rate={sample_rate}")
+    
     # Convert to numpy if it's a tensor
     if hasattr(audio_tensor, 'numpy'):
         audio_np = audio_tensor.numpy()
+        logger.debug(f"Converted tensor to numpy: shape={audio_np.shape}, dtype={audio_np.dtype}")
     else:
         audio_np = audio_tensor
+        logger.debug(f"Using numpy array: shape={audio_np.shape}, dtype={audio_np.dtype}")
     
     # Ensure int16 format
+    original_dtype = audio_np.dtype
     if audio_np.dtype != np.int16:
         if audio_np.dtype == np.float32:
             audio_np = (audio_np * 32767).astype(np.int16)
+            logger.debug(f"Converted float32 to int16: {original_dtype} -> {audio_np.dtype}")
         else:
             audio_np = audio_np.astype(np.int16)
+            logger.debug(f"Converted {original_dtype} to int16")
+    else:
+        logger.debug("Audio already in int16 format")
     
     # Create WAV file in memory
     wav_buffer = io.BytesIO()
@@ -274,48 +308,58 @@ def audio_to_wav_bytes(audio_tensor, sample_rate=24000):
         wav_file.setframerate(sample_rate)
         wav_file.writeframes(audio_np.tobytes())
     
-    return wav_buffer.getvalue()
+    wav_bytes = wav_buffer.getvalue()
+    duration_seconds = len(audio_np) / sample_rate
+    logger.info(f"WAV created: {len(wav_bytes):,} bytes, duration={duration_seconds:.2f}s, samples={len(audio_np):,}")
+    
+    return wav_bytes
 
 def audio_to_pcm_bytes(audio_tensor):
     """Convert audio tensor to raw PCM bytes"""
+    logger.debug("Converting audio to PCM")
+    
     if hasattr(audio_tensor, 'numpy'):
         audio_np = audio_tensor.numpy()
+        logger.debug(f"Converted tensor to numpy: shape={audio_np.shape}, dtype={audio_np.dtype}")
     else:
         audio_np = audio_tensor
+        logger.debug(f"Using numpy array: shape={audio_np.shape}, dtype={audio_np.dtype}")
     
+    original_dtype = audio_np.dtype
     if audio_np.dtype != np.int16:
         if audio_np.dtype == np.float32:
             audio_np = (audio_np * 32767).astype(np.int16)
+            logger.debug(f"Converted float32 to int16: {original_dtype} -> {audio_np.dtype}")
         else:
             audio_np = audio_np.astype(np.int16)
+            logger.debug(f"Converted {original_dtype} to int16")
+    else:
+        logger.debug("Audio already in int16 format")
     
-    return audio_np.tobytes()
+    pcm_bytes = audio_np.tobytes()
+    duration_seconds = len(audio_np) / 24000  # Assuming 24kHz sample rate
+    logger.info(f"PCM created: {len(pcm_bytes):,} bytes, duration={duration_seconds:.2f}s, samples={len(audio_np):,}")
+    
+    return pcm_bytes
 
-# Startup event
-@app.on_event("startup")
-async def startup_event():
-    """Initialize the TTS pipeline"""
-    global pipeline
-    try:
-        pipeline = SafePipeline()
-        print("✅ SafePipeline initialized successfully")
-    except Exception as e:
-        print(f"❌ Failed to initialize SafePipeline: {e}")
-        raise
 
 # Health check
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
+    logger.info("Health check requested")
+    
     g2p_available = True
     try:
         import requests
         response = requests.get(f"{config.g2p_url}/health", timeout=5)
         g2p_available = response.status_code == 200
-    except:
+        logger.debug(f"G2P service health check: {response.status_code}")
+    except Exception as e:
         g2p_available = False
+        logger.warning(f"G2P service health check failed: {e}")
     
-    return {
+    health_status = {
         "status": "healthy" if pipeline else "unhealthy",
         "pipeline_ready": pipeline is not None,
         "g2p_service_available": g2p_available,
@@ -332,19 +376,28 @@ async def health_check():
             "first_chunk_min_tokens": config.first_chunk_min_tokens
         }
     }
+    
+    logger.info(f"Health check response: status={health_status['status']}, pipeline_ready={health_status['pipeline_ready']}, g2p_available={g2p_available}")
+    return health_status
 
 # Mode 1: Single TTS
 @app.post("/tts")
 async def single_tts(request: TTSRequest):
     """Single text-to-speech conversion using G2P service and phonemes"""
+    logger.info(f"Single TTS request: text_len={len(request.text)}, voice={request.voice}, lang={request.language}, format={request.format}")
+    
     if not pipeline:
+        logger.error("TTS pipeline not ready for single TTS request")
         raise HTTPException(status_code=503, detail="TTS pipeline not ready")
     
     try:
         # Convert text to phonemes using G2P service
+        logger.debug(f"Converting text to phonemes: '{request.text[:50]}...'")
         phonemes = await text_to_phonemes(request.text, request.language)
+        logger.debug(f"G2P conversion successful: {len(phonemes)} phonemes")
         
         # Generate audio from phonemes
+        logger.debug(f"Generating audio from phonemes using voice={request.voice}, speed={request.speed}")
         if pipeline:  # Type guard
             audio_tensor = pipeline.from_phonemes(
                 phonemes=phonemes,
@@ -352,7 +405,10 @@ async def single_tts(request: TTSRequest):
                 speed=request.speed
             )
         else:
+            logger.error("Pipeline not available during audio generation")
             raise HTTPException(status_code=503, detail="Pipeline not available")
+        
+        logger.debug(f"Audio generation successful: {len(audio_tensor)} samples")
         
         # Convert to requested format
         if request.format.lower() == "wav":
@@ -362,39 +418,52 @@ async def single_tts(request: TTSRequest):
             audio_bytes = audio_to_pcm_bytes(audio_tensor)
             media_type = "audio/pcm"
         else:
+            logger.error(f"Unsupported audio format requested: {request.format}")
             raise HTTPException(status_code=400, detail=f"Unsupported format: {request.format}")
+        
+        duration = len(audio_tensor) / 24000
+        logger.info(f"Single TTS completed: {len(audio_bytes)} bytes, duration={duration:.2f}s, voice={request.voice}")
         
         return Response(
             content=audio_bytes,
             media_type=media_type,
             headers={
                 "Content-Disposition": f"attachment; filename=tts_output.{request.format}",
-                "X-Audio-Duration": str(len(audio_tensor) / 24000),  # Duration in seconds
+                "X-Audio-Duration": str(duration),
                 "X-Voice-Used": request.voice,
                 "X-Phonemes-Used": phonemes[:100] + "..." if len(phonemes) > 100 else phonemes
             }
         )
         
     except Exception as e:
+        logger.error(f"Single TTS generation failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"TTS generation failed: {str(e)}")
 
 # Mode 2: Batch TTS
 @app.post("/tts/batch")
 async def batch_tts(batch_request: BatchTTSRequest):
     """Batch text-to-speech conversion using G2P service and phonemes"""
+    logger.info(f"Batch TTS request: {len(batch_request.requests)} requests")
+    
     if not pipeline:
+        logger.error("TTS pipeline not ready for batch TTS request")
         raise HTTPException(status_code=503, detail="TTS pipeline not ready")
     
     if len(batch_request.requests) > config.max_batch_size:
+        logger.error(f"Batch size {len(batch_request.requests)} exceeds maximum {config.max_batch_size}")
         raise HTTPException(status_code=400, detail=f"Maximum {config.max_batch_size} requests per batch")
     
     try:
         # Create ZIP archive in memory
         zip_buffer = io.BytesIO()
+        successful_requests = 0
+        failed_requests = 0
         
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
             for i, req in enumerate(batch_request.requests):
                 try:
+                    logger.debug(f"Processing batch item {i+1}/{len(batch_request.requests)}: voice={req.voice}, text_len={len(req.text)}")
+                    
                     # Convert text to phonemes using G2P service
                     phonemes = await text_to_phonemes(req.text, req.language)
                     
@@ -422,40 +491,57 @@ async def batch_tts(batch_request: BatchTTSRequest):
                     phonemes_filename = f"phonemes_{i+1:03d}.txt"
                     zip_file.writestr(phonemes_filename, f"Text: {req.text}\nPhonemes: {phonemes}")
                     
+                    successful_requests += 1
+                    logger.debug(f"Batch item {i+1} completed successfully")
+                    
                 except Exception as e:
                     # Add error file for failed requests
                     error_content = f"Error generating audio: {str(e)}\nText: {req.text[:100]}..."
                     zip_file.writestr(f"error_{i+1:03d}.txt", error_content)
+                    failed_requests += 1
+                    logger.error(f"Batch item {i+1} failed: {str(e)}")
         
         zip_bytes = zip_buffer.getvalue()
+        
+        logger.info(f"Batch TTS completed: {successful_requests} successful, {failed_requests} failed, zip_size={len(zip_bytes)} bytes")
         
         return Response(
             content=zip_bytes,
             media_type="application/zip",
             headers={
                 "Content-Disposition": "attachment; filename=tts_batch.zip",
-                "X-Total-Requests": str(len(batch_request.requests))
+                "X-Total-Requests": str(len(batch_request.requests)),
+                "X-Successful-Requests": str(successful_requests),
+                "X-Failed-Requests": str(failed_requests)
             }
         )
         
     except Exception as e:
+        logger.error(f"Batch processing failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Batch processing failed: {str(e)}")
 
 # Mode 3: Streaming TTS with smart_split and G2P
 @app.post("/tts/stream")
 async def streaming_tts(request: StreamingTTSRequest, client_request: Request):
     """Streaming text-to-speech conversion using G2P service and phonemes"""
+    logger.info(f"Streaming TTS request: text_len={len(request.text)}, voice={request.voice}, lang={request.language}, format={request.format}")
+    
     if not pipeline:
+        logger.error("TTS pipeline not ready for streaming TTS request")
         raise HTTPException(status_code=503, detail="TTS pipeline not ready")
     
     async def generate_audio_stream():
+        chunk_count = 0
+        total_bytes_streamed = 0
+        
         try:
-            chunk_count = 0
+            logger.debug(f"Starting streaming generation for text: '{request.text[:100]}...'")
             
             # Use smart_split to break text into optimal chunks
             async for text_chunk in simple_smart_split(request.text):
                 # Check if client disconnected
                 if await client_request.is_disconnected():
+                    logger.info(f"Client disconnected during streaming after {chunk_count} chunks")
                     break
                 
                 # Handle pause chunks
@@ -493,7 +579,7 @@ async def streaming_tts(request: StreamingTTSRequest, client_request: Request):
                             speed=request.speed
                         )
                     else:
-                        print("Pipeline not available for chunk processing")
+                        logger.error("Pipeline not available for chunk processing")
                         continue
                     
                     # Convert to bytes
@@ -510,24 +596,30 @@ async def streaming_tts(request: StreamingTTSRequest, client_request: Request):
                         
                         chunk = audio_bytes[i:i + chunk_size]
                         yield chunk
+                        total_bytes_streamed += len(chunk)
                         
                         # Small delay for realistic streaming
                         await asyncio.sleep(0.01)
                     
                     chunk_count += 1
-                    print(f"Streamed chunk {chunk_count}: '{text_chunk[:50]}...' -> {len(phonemes)} phonemes")
+                    logger.info(f"Streamed chunk {chunk_count}: '{text_chunk[:50]}...' -> {len(phonemes)} phonemes")
                     
                 except Exception as e:
                     # Log error but continue with next chunk
-                    print(f"Error processing chunk {chunk_count}: {e}")
+                    logger.error(f"Error processing chunk {chunk_count}: {e}")
                     continue
                 
         except Exception as e:
             # Send error as final chunk
+            logger.error(f"Streaming generation error: {str(e)}")
             error_msg = f"Streaming error: {str(e)}"
             yield error_msg.encode()
+        finally:
+            logger.info(f"Streaming completed: {chunk_count} chunks processed, {total_bytes_streamed} total bytes streamed")
     
     media_type = "audio/wav" if request.format.lower() == "wav" else "audio/pcm"
+    
+    logger.debug(f"Starting streaming response with media_type={media_type}")
     
     return StreamingResponse(
         generate_audio_stream(),
@@ -545,11 +637,15 @@ async def streaming_tts(request: StreamingTTSRequest, client_request: Request):
 @app.get("/voices")
 async def list_voices():
     """List available voices"""
+    logger.info("Voices list requested")
+    
     # Basic voice list - in production this would query the actual voice files
     voices = [
         "af_heart", "af_bella", "af_sarah", "af_nicole", "af_sky",
         "am_adam", "am_michael", "am_eric", "am_liam", "am_onyx"
     ]
+    
+    logger.debug(f"Returning {len(voices)} available voices")
     return {"voices": voices}
 
 # Test endpoint for smart_split functionality
@@ -557,20 +653,26 @@ async def list_voices():
 async def test_smart_split(request: dict):
     """Test the smart_split functionality"""
     text = request.get("text", "")
+    logger.info(f"Smart split test requested: text_len={len(text)}")
+    
     if not text:
+        logger.error("Smart split test failed: no text provided")
         raise HTTPException(status_code=400, detail="Text is required")
     
     chunks = []
     async for chunk in simple_smart_split(text):
         chunks.append(chunk)
     
-    return {
+    result = {
         "original_text": text,
         "chunks": chunks,
         "chunk_count": len(chunks),
         "total_chars": len(text),
         "avg_chunk_size": len(text) / len(chunks) if chunks else 0
     }
+    
+    logger.info(f"Smart split test completed: {len(chunks)} chunks, avg_size={result['avg_chunk_size']:.1f}")
+    return result
 
 # Test endpoint for G2P conversion
 @app.post("/test/g2p")
@@ -579,25 +681,35 @@ async def test_g2p(request: dict):
     text = request.get("text", "")
     language = request.get("language", "en-US")
     
+    logger.info(f"G2P test requested: text_len={len(text)}, language={language}")
+    
     if not text:
+        logger.error("G2P test failed: no text provided")
         raise HTTPException(status_code=400, detail="Text is required")
     
     try:
         phonemes = await text_to_phonemes(text, language)
-        return {
+        result = {
             "text": text,
             "language": language,
             "phonemes": phonemes,
             "phoneme_length": len(phonemes)
         }
+        
+        logger.info(f"G2P test completed: {len(phonemes)} phonemes generated")
+        return result
+        
     except Exception as e:
+        logger.error(f"G2P test failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"G2P conversion failed: {str(e)}")
 
 # Configuration endpoint
 @app.get("/config")
 async def get_config():
     """Get current service configuration"""
-    return {
+    logger.info("Configuration requested")
+    
+    config_data = {
         "g2p_url": config.g2p_url,
         "g2p_timeout": config.g2p_timeout,
         "max_batch_size": config.max_batch_size,
@@ -608,35 +720,58 @@ async def get_config():
         "host": config.host,
         "port": config.port
     }
+    
+    logger.debug(f"Returning configuration: {config_data}")
+    return config_data
 
 if __name__ == "__main__":
     import uvicorn
     import socket
     
+    logger.info("=" * 60)
+    logger.info("🚀 License-Safe Kokoro TTS Service Starting")
+    logger.info("=" * 60)
+    
     # Check if port is available, if not, try alternative ports
     def find_available_port(start_port, max_attempts=10):
+        logger.debug(f"Searching for available port starting from {start_port}")
         for i in range(max_attempts):
             port = start_port + i
             try:
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                     s.bind(('', port))
+                    logger.debug(f"Port {port} is available")
                     return port
             except OSError:
+                logger.debug(f"Port {port} is in use")
                 continue
         return None
     
     # Find available port
     available_port = find_available_port(config.port)
     if available_port is None:
-        print(f"❌ Could not find available port starting from {config.port}")
+        logger.error(f"Could not find available port starting from {config.port}")
         exit(1)
     
     if available_port != config.port:
-        print(f"⚠️  Port {config.port} is in use, using port {available_port} instead")
+        logger.warning(f"Port {config.port} is in use, using port {available_port} instead")
     
-    print(f"🚀 Starting TTS Service with G2P endpoint: {config.g2p_url}")
-    print(f"📊 Configuration: max_batch={config.max_batch_size}, chunk_tokens={config.min_tokens_per_chunk}-{config.max_tokens_per_chunk}")
-    print(f"⚡ First chunk optimization: {config.first_chunk_min_tokens}-{config.first_chunk_max_tokens} tokens for faster time to first token")
-    print(f"🌐 Server will start on http://{config.host}:{available_port}")
+    logger.info(f"📡 G2P Service Endpoint: {config.g2p_url}")
+    logger.info(f"📊 Batch Configuration: max_size={config.max_batch_size}")
+    logger.info(f"🔧 Chunk Configuration: {config.min_tokens_per_chunk}-{config.max_tokens_per_chunk} tokens")
+    logger.info(f"⚡ First Chunk Optimization: {config.first_chunk_min_tokens}-{config.first_chunk_max_tokens} tokens")
+    logger.info(f"🌐 Server Address: http://{config.host}:{available_port}")
+    logger.info(f"📚 API Documentation: http://{config.host}:{available_port}/docs")
+    logger.info("=" * 60)
     
-    uvicorn.run(app, host=config.host, port=available_port)
+    logger.info("Starting uvicorn server...")
+    
+    # Configure uvicorn to use our logging
+    uvicorn.run(
+        app,
+        host=config.host,
+        port=available_port,
+        log_level="info",
+        access_log=True,
+        use_colors=True
+    )
