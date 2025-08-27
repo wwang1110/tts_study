@@ -611,7 +611,32 @@ async def get_config():
 
 if __name__ == "__main__":
     import uvicorn
+    import socket
+    
+    # Check if port is available, if not, try alternative ports
+    def find_available_port(start_port, max_attempts=10):
+        for i in range(max_attempts):
+            port = start_port + i
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.bind(('', port))
+                    return port
+            except OSError:
+                continue
+        return None
+    
+    # Find available port
+    available_port = find_available_port(config.port)
+    if available_port is None:
+        print(f"❌ Could not find available port starting from {config.port}")
+        exit(1)
+    
+    if available_port != config.port:
+        print(f"⚠️  Port {config.port} is in use, using port {available_port} instead")
+    
     print(f"🚀 Starting TTS Service with G2P endpoint: {config.g2p_url}")
     print(f"📊 Configuration: max_batch={config.max_batch_size}, chunk_tokens={config.min_tokens_per_chunk}-{config.max_tokens_per_chunk}")
     print(f"⚡ First chunk optimization: {config.first_chunk_min_tokens}-{config.first_chunk_max_tokens} tokens for faster time to first token")
-    uvicorn.run(app, host=config.host, port=config.port)
+    print(f"🌐 Server will start on http://{config.host}:{available_port}")
+    
+    uvicorn.run(app, host=config.host, port=available_port)
