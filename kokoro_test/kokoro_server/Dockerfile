@@ -41,4 +41,4 @@ ENV HOST=0.0.0.0
 ENV PORT=8880
 
 # Run the service with Gunicorn for production
-CMD ["gunicorn", "--bind", "0.0.0.0:8880", "--workers", "2", "--worker-class", "uvicorn.workers.UvicornWorker", "--access-logfile", "-", "--error-logfile", "-", "--log-level", "info", "tts_service:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:8880", "--workers", "1", "--worker-class", "uvicorn.workers.UvicornWorker", "--access-logfile", "-", "--error-logfile", "-", "--log-level", "info", "tts_service:app"]
