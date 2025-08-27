@@ -34,36 +34,52 @@ class Config:
     """Service configuration"""
     def __init__(self):
         self.g2p_url = os.getenv("G2P_SERVICE_URL", "http://0.0.0.0:5000")
-        self.g2p_timeout = int(os.getenv("G2P_TIMEOUT", "30"))
+        self.g2p_timeout = int(os.getenv("G2P_TIMEOUT", "5"))  # Reduced from 30s to 5s
         self.max_batch_size = int(os.getenv("MAX_BATCH_SIZE", "50"))
         self.max_tokens_per_chunk = int(os.getenv("MAX_TOKENS_PER_CHUNK", "400"))
         self.min_tokens_per_chunk = int(os.getenv("MIN_TOKENS_PER_CHUNK", "100"))
-        # First chunk optimization for faster time to first token
-        self.first_chunk_max_tokens = int(os.getenv("FIRST_CHUNK_MAX_TOKENS", "50"))
-        self.first_chunk_min_tokens = int(os.getenv("FIRST_CHUNK_MIN_TOKENS", "25"))
+        # First chunk optimization for faster time to first token - made even smaller
+        self.first_chunk_max_tokens = int(os.getenv("FIRST_CHUNK_MAX_TOKENS", "10"))
+        self.first_chunk_min_tokens = int(os.getenv("FIRST_CHUNK_MIN_TOKENS", "5"))
         self.host = os.getenv("HOST", "0.0.0.0")
         self.port = int(os.getenv("PORT", "8880"))
 
 # Global configuration and pipeline
 config = Config()
 pipeline = None
+# Global aiohttp session for connection pooling
+g2p_session = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan event handler for startup and shutdown"""
     # Startup
-    global pipeline
+    global pipeline, g2p_session
     try:
         logger.info("Initializing SafePipeline...")
         pipeline = SafePipeline()
         logger.info("✅ SafePipeline initialized successfully")
+        
+        # Initialize persistent aiohttp session for G2P service (if available)
+        try:
+            import aiohttp
+            timeout = aiohttp.ClientTimeout(total=config.g2p_timeout)
+            g2p_session = aiohttp.ClientSession(timeout=timeout)
+            logger.info("✅ G2P session pool initialized with aiohttp")
+        except ImportError:
+            logger.warning("⚠️ aiohttp not available, falling back to requests library")
+            g2p_session = None
+        
     except Exception as e:
-        logger.error(f"❌ Failed to initialize SafePipeline: {e}")
+        logger.error(f"❌ Failed to initialize services: {e}")
         raise
     
     yield
     
-    # Shutdown (if needed)
+    # Shutdown
+    if g2p_session:
+        await g2p_session.close()
+        logger.info("G2P session pool closed")
     logger.info("TTS service shutting down...")
 
 # Initialize FastAPI app
@@ -122,9 +138,11 @@ async def simple_smart_split(
     max_chars = max_tokens * 4
     min_chars = min_tokens * 4
     
-    # First chunk optimization parameters
-    first_chunk_max_chars = config.first_chunk_max_tokens * 4
+    # First chunk optimization parameters - FORCE ultra-small for debugging
+    first_chunk_max_chars = 60  # Force 60 chars max (15 tokens) regardless of config
     first_chunk_min_chars = config.first_chunk_min_tokens * 4
+    
+    logger.debug(f"FORCED first_chunk_max_chars: {first_chunk_max_chars}")
     
     # Handle pause tags first
     pause_pattern = re.compile(r'\[pause:(\d+(?:\.\d+)?)s\]', re.IGNORECASE)
@@ -144,7 +162,7 @@ async def simple_smart_split(
         # Split text part into sentences
         sentences = re.split(r'([.!?;:])\s*', part)
         
-        # Handle first chunk specially for faster time to first token
+        # Handle first chunk specially for ULTRA-FAST time to first token
         if is_first_text_chunk and sentences:
             is_first_text_chunk = False
             
@@ -155,38 +173,47 @@ async def simple_smart_split(
             if first_sentence:
                 first_full_sentence = first_sentence + first_punct
                 
-                # Check if first sentence fits within first chunk limits
+                # ULTRA-AGGRESSIVE first chunk optimization - ALWAYS prioritize speed
+                # Never process more than first_chunk_max_chars, regardless of sentence boundaries
+                logger.debug(f"First sentence length: {len(first_full_sentence)}, max allowed: {first_chunk_max_chars}")
+                logger.debug(f"First sentence: '{first_full_sentence}'")
+                
                 if len(first_full_sentence) <= first_chunk_max_chars:
                     # Perfect! First sentence fits in first chunk
+                    logger.debug("First sentence fits within limits")
                     yield first_full_sentence.strip()
-                    
-                    # Continue with remaining sentences using normal logic
                     remaining_sentences = sentences[2:] if len(sentences) > 2 else []
                 else:
-                    # First sentence is too long, truncate at word boundary
+                    logger.debug("First sentence too long, forcing truncation")
+                    # FORCE ultra-small first chunk regardless of sentence structure
                     words = first_sentence.split()
                     truncated_sentence = ""
                     
-                    for word in words:
+                    # AGGRESSIVE: Take maximum 5-8 words for ultra-fast first response
+                    max_first_words = min(8, len(words))  # Never more than 8 words
+                    
+                    for i, word in enumerate(words[:max_first_words]):
                         test_sentence = truncated_sentence + (" " if truncated_sentence else "") + word
-                        if len(test_sentence) <= first_chunk_max_chars - len(first_punct):
+                        if len(test_sentence) <= first_chunk_max_chars:
                             truncated_sentence = test_sentence
                         else:
                             break
                     
-                    if truncated_sentence:
-                        # Yield truncated first chunk
-                        yield (truncated_sentence + first_punct).strip()
-                        
-                        # Put remaining words back into sentences for normal processing
-                        remaining_words = first_sentence[len(truncated_sentence):].strip()
-                        if remaining_words:
-                            remaining_sentences = [remaining_words + first_punct] + sentences[2:]
-                        else:
-                            remaining_sentences = sentences[2:] if len(sentences) > 2 else []
+                    # Ensure we have at least 2 words, even if it slightly exceeds limit
+                    if not truncated_sentence and len(words) >= 2:
+                        truncated_sentence = f"{words[0]} {words[1]}"
+                    elif not truncated_sentence:
+                        truncated_sentence = words[0] if words else first_sentence[:first_chunk_max_chars]
+                    
+                    # Yield ultra-small first chunk for maximum speed (no punctuation to avoid incomplete sentences)
+                    yield truncated_sentence.strip()
+                    
+                    # Put ALL remaining content back for normal processing
+                    remaining_words = first_sentence[len(truncated_sentence):].strip()
+                    if remaining_words:
+                        # Reconstruct the remaining sentence with punctuation
+                        remaining_sentences = [remaining_words + first_punct] + sentences[2:]
                     else:
-                        # Edge case: even first word is too long, just yield it
-                        yield first_full_sentence.strip()
                         remaining_sentences = sentences[2:] if len(sentences) > 2 else []
                 
                 # Process remaining sentences with normal chunking logic
@@ -249,31 +276,52 @@ async def simple_smart_split(
 
 # G2P Service Integration
 async def text_to_phonemes(text: str, language: str, g2p_url: Optional[str] = None) -> str:
-    """Convert text to phonemes using configurable G2P service"""
-    import requests
+    """Convert text to phonemes with aiohttp fallback to requests"""
+    global g2p_session
     
     # Use config default if not specified
     if g2p_url is None:
         g2p_url = config.g2p_url
     
-    try:
-        response = requests.post(
-            f"{g2p_url}/convert",
-            json={"text": text, "lang": language},
-            timeout=config.g2p_timeout
-        )
-        response.raise_for_status()
-        
-        data = response.json()
-        if 'error' in data:
-            raise RuntimeError(f"G2P service error: {data['error']}")
-        
-        return data['phonemes']
-        
-    except requests.RequestException as e:
-        raise RuntimeError(f"G2P service unavailable at {g2p_url}: {e}")
-    except ImportError:
-        raise RuntimeError("requests library required for G2P service. Install with: pip install requests")
+    # Try aiohttp first (fastest)
+    if g2p_session is not None:
+        try:
+            async with g2p_session.post(
+                f"{g2p_url}/convert",
+                json={"text": text, "lang": language}
+            ) as response:
+                response.raise_for_status()
+                
+                data = await response.json()
+                if 'error' in data:
+                    raise RuntimeError(f"G2P service error: {data['error']}")
+                
+                return data['phonemes']
+        except Exception as e:
+            raise RuntimeError(f"G2P service unavailable at {g2p_url}: {e}")
+    
+    # Fallback to requests library (slower but works)
+    else:
+        try:
+            import requests
+            
+            response = requests.post(
+                f"{g2p_url}/convert",
+                json={"text": text, "lang": language},
+                timeout=config.g2p_timeout
+            )
+            response.raise_for_status()
+            
+            data = response.json()
+            if 'error' in data:
+                raise RuntimeError(f"G2P service error: {data['error']}")
+            
+            return data['phonemes']
+            
+        except ImportError:
+            raise RuntimeError("Neither aiohttp nor requests library available for G2P service")
+        except Exception as e:
+            raise RuntimeError(f"G2P service unavailable at {g2p_url}: {e}")
 
 # Utility functions
 def audio_to_wav_bytes(audio_tensor, sample_rate=24000):
@@ -649,8 +697,8 @@ async def streaming_tts(request: StreamingTTSRequest, client_request: Request):
                         yield stream_chunk
                         total_bytes_streamed += len(stream_chunk)
                         
-                        # Small delay for realistic streaming
-                        await asyncio.sleep(0.001)  # Reduced delay for faster streaming
+                        # Minimal delay for maximum streaming speed
+                        await asyncio.sleep(0.0001)  # Further reduced for ultra-fast streaming
                     
                     chunk_count += 1
                     logger.info(f"Streamed chunk {chunk_count}: '{text_chunk[:50]}...' -> {len(audio_np)} samples")

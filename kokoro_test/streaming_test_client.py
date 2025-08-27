@@ -192,7 +192,6 @@ async def run_basic_tests():
             print(f"Expected: {test_case['expected_benefit']}")
             
             # Test smart_split first
-            '''
             try:
                 split_result = await client.test_smart_split(test_case['text'])
                 chunks = split_result.get('chunks', [])
@@ -201,17 +200,16 @@ async def run_basic_tests():
                 if chunks:
                     first_chunk_tokens = len(chunks[0]) // 4
                     print(f"  First chunk: {len(chunks[0])} chars (~{first_chunk_tokens} tokens)")
-                    print(f"  Content: {chunks[0][:60]}{'...' if len(chunks[0]) > 60 else ''}")
+                    print(f"  Content: '{chunks[0]}'")
                     
                     # Check optimization success
-                    if first_chunk_tokens <= 50:  # Our max first chunk token limit
-                        print(f"  ✅ Optimization SUCCESS: {first_chunk_tokens} ≤ 50 tokens")
+                    if first_chunk_tokens <= 30:  # Updated to match new limit
+                        print(f"  ✅ Optimization SUCCESS: {first_chunk_tokens} ≤ 30 tokens")
                     else:
-                        print(f"  ⚠️  Optimization EXCEEDED: {first_chunk_tokens} > 50 tokens")
+                        print(f"  ⚠️  Optimization EXCEEDED: {first_chunk_tokens} > 30 tokens")
                 
             except Exception as e:
                 print(f"  ❌ Smart split test failed: {e}")
-            '''
 
             # Test streaming performance
             print("  Streaming test...")
