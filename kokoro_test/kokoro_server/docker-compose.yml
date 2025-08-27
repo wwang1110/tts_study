@@ -9,7 +9,7 @@ services:
       - "8880:8880"
     environment:
       - PYTHONUNBUFFERED=1
-      - G2P_SERVICE_URL=http://kokoro-g2p-service:5000
+      - G2P_SERVICE_URL=http://g2p-service:5000
       - G2P_TIMEOUT=30
       - MAX_BATCH_SIZE=50
       - MAX_TOKENS_PER_CHUNK=400

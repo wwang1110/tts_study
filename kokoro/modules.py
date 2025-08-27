@@ -45,7 +45,7 @@ class TextEncoder(nn.Module):
                 actv,
                 nn.Dropout(0.2),
             ))
-        self.lstm = nn.LSTM(channels, channels//2, 1, batch_first=True, bidirectional=True)
+        self.lstm = nn.LSTM(channels, channels//2, 1, batch_first=True, bidirectional=True, dropout=0.0)
 
     def forward(self, x, input_lengths, m):
         x = self.embedding(x)  # [B, T, emb]
@@ -92,9 +92,9 @@ class ProsodyPredictor(nn.Module):
     def __init__(self, style_dim, d_hid, nlayers, max_dur=50, dropout=0.1):
         super().__init__()
         self.text_encoder = DurationEncoder(sty_dim=style_dim, d_model=d_hid,nlayers=nlayers, dropout=dropout)
-        self.lstm = nn.LSTM(d_hid + style_dim, d_hid // 2, 1, batch_first=True, bidirectional=True)
+        self.lstm = nn.LSTM(d_hid + style_dim, d_hid // 2, 1, batch_first=True, bidirectional=True, dropout=0.0)
         self.duration_proj = LinearNorm(d_hid, max_dur)
-        self.shared = nn.LSTM(d_hid + style_dim, d_hid // 2, 1, batch_first=True, bidirectional=True)
+        self.shared = nn.LSTM(d_hid + style_dim, d_hid // 2, 1, batch_first=True, bidirectional=True, dropout=0.0)
         self.F0 = nn.ModuleList()
         self.F0.append(AdainResBlk1d(d_hid, d_hid, style_dim, dropout_p=dropout))
         self.F0.append(AdainResBlk1d(d_hid, d_hid // 2, style_dim, upsample=True, dropout_p=dropout))
@@ -139,7 +139,7 @@ class DurationEncoder(nn.Module):
         super().__init__()
         self.lstms = nn.ModuleList()
         for _ in range(nlayers):
-            self.lstms.append(nn.LSTM(d_model + sty_dim, d_model // 2, num_layers=1, batch_first=True, bidirectional=True))
+            self.lstms.append(nn.LSTM(d_model + sty_dim, d_model // 2, num_layers=1, batch_first=True, bidirectional=True, dropout=0.0))
             self.lstms.append(AdaLayerNorm(sty_dim, d_model))
         self.dropout = dropout
         self.d_model = d_model

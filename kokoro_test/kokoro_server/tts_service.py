@@ -33,7 +33,7 @@ from safe_pipeline import SafePipeline
 class Config:
     """Service configuration"""
     def __init__(self):
-        self.g2p_url = os.getenv("G2P_SERVICE_URL", "http://localhost:5000")
+        self.g2p_url = os.getenv("G2P_SERVICE_URL", "http://0.0.0.0:5000")
         self.g2p_timeout = int(os.getenv("G2P_TIMEOUT", "30"))
         self.max_batch_size = int(os.getenv("MAX_BATCH_SIZE", "50"))
         self.max_tokens_per_chunk = int(os.getenv("MAX_TOKENS_PER_CHUNK", "400"))

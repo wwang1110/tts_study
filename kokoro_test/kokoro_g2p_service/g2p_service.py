@@ -235,6 +235,6 @@ if __name__ == '__main__':
     print(f"  GET /languages - List supported languages")
     print(f"  GET /docs - API documentation")
     print(f"\nExample: POST /convert with {{'text': 'hello', 'lang': 'en'}}")
-    print(f"Server starting at: http://localhost:5000")
+    print(f"Server starting at: http://0.0.0.0:5000")
     
     uvicorn.run(app, host="0.0.0.0", port=5000, log_level="info")

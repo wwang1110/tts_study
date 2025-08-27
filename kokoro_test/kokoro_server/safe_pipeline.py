@@ -23,7 +23,7 @@ class SafePipeline:
     
     Usage patterns:
     1. Direct phonemes: pipeline.from_phonemes("həˈloʊ", "af_heart")
-    2. G2P service: pipeline.from_text("hello", "af_heart", g2p_url="http://localhost:5000")
+    2. G2P service: pipeline.from_text("hello", "af_heart", g2p_url="http://0.0.0.0:5000")
     """
     
     def __init__(
@@ -122,7 +122,7 @@ class SafePipeline:
         text: str,
         voice: Union[str, torch.FloatTensor],
         lang: str = "en-US",
-        g2p_url: str = "http://localhost:5000",
+        g2p_url: str = "http://0.0.0.0:5000",
         speed: float = 1.0
     ) -> torch.FloatTensor:
         """
