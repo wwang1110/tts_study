@@ -533,6 +533,7 @@ async def streaming_tts(request: StreamingTTSRequest, client_request: Request):
     async def generate_audio_stream():
         chunk_count = 0
         total_bytes_streamed = 0
+        all_audio_data = []  # Collect all audio data first
         
         try:
             logger.debug(f"Starting streaming generation for text: '{request.text[:100]}...'")
@@ -550,20 +551,7 @@ async def streaming_tts(request: StreamingTTSRequest, client_request: Request):
                     # Generate silence for pause duration
                     silence_samples = int(pause_duration * 24000)  # 24kHz sample rate
                     silence_audio = np.zeros(silence_samples, dtype=np.int16)
-                    
-                    if request.format.lower() == "wav":
-                        silence_bytes = audio_to_wav_bytes(silence_audio)
-                    else:
-                        silence_bytes = audio_to_pcm_bytes(silence_audio)
-                    
-                    # Stream silence in chunks
-                    chunk_size = 1024
-                    for i in range(0, len(silence_bytes), chunk_size):
-                        if await client_request.is_disconnected():
-                            return
-                        yield silence_bytes[i:i + chunk_size]
-                        await asyncio.sleep(0.01)
-                    
+                    all_audio_data.append(silence_audio)
                     continue
                 
                 # Generate audio for text chunk using G2P + phonemes
@@ -582,33 +570,52 @@ async def streaming_tts(request: StreamingTTSRequest, client_request: Request):
                         logger.error("Pipeline not available for chunk processing")
                         continue
                     
-                    # Convert to bytes
-                    if request.format.lower() == "wav":
-                        audio_bytes = audio_to_wav_bytes(audio_tensor)
+                    # Convert to numpy and collect
+                    if hasattr(audio_tensor, 'numpy'):
+                        audio_np = audio_tensor.numpy()
                     else:
-                        audio_bytes = audio_to_pcm_bytes(audio_tensor)
+                        audio_np = np.array(audio_tensor)
                     
-                    # Stream audio in chunks
-                    chunk_size = 1024
-                    for i in range(0, len(audio_bytes), chunk_size):
-                        if await client_request.is_disconnected():
-                            return
-                        
-                        chunk = audio_bytes[i:i + chunk_size]
-                        yield chunk
-                        total_bytes_streamed += len(chunk)
-                        
-                        # Small delay for realistic streaming
-                        await asyncio.sleep(0.01)
+                    # Ensure int16 format
+                    if audio_np.dtype != np.int16:
+                        if audio_np.dtype == np.float32:
+                            audio_np = (audio_np * 32767).astype(np.int16)
+                        else:
+                            audio_np = audio_np.astype(np.int16)
                     
+                    all_audio_data.append(audio_np)
                     chunk_count += 1
-                    logger.info(f"Streamed chunk {chunk_count}: '{text_chunk[:50]}...' -> {len(phonemes)} phonemes")
+                    logger.info(f"Processed chunk {chunk_count}: '{text_chunk[:50]}...' -> {len(phonemes)} phonemes")
                     
                 except Exception as e:
                     # Log error but continue with next chunk
                     logger.error(f"Error processing chunk {chunk_count}: {e}")
                     continue
+            
+            # Concatenate all audio data
+            if all_audio_data:
+                combined_audio = np.concatenate(all_audio_data)
+                logger.info(f"Combined audio: {len(combined_audio)} samples, {len(combined_audio)/24000:.2f}s duration")
                 
+                # Convert to requested format
+                if request.format.lower() == "wav":
+                    audio_bytes = audio_to_wav_bytes(combined_audio)
+                else:
+                    audio_bytes = audio_to_pcm_bytes(combined_audio)
+                
+                # Stream the complete audio in chunks
+                chunk_size = 1024
+                for i in range(0, len(audio_bytes), chunk_size):
+                    if await client_request.is_disconnected():
+                        return
+                    
+                    chunk = audio_bytes[i:i + chunk_size]
+                    yield chunk
+                    total_bytes_streamed += len(chunk)
+                    
+                    # Small delay for realistic streaming
+                    await asyncio.sleep(0.01)
+            
         except Exception as e:
             # Send error as final chunk
             logger.error(f"Streaming generation error: {str(e)}")
