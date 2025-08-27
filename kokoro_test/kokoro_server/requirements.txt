@@ -6,6 +6,9 @@ fastapi==0.104.1
 uvicorn[standard]==0.24.0
 pydantic==2.5.0
 
+# Production WSGI server
+gunicorn>=21.2.0
+
 # Audio processing (GPL-free)
 numpy>=1.21.0
 torch>=2.0.0
@@ -13,6 +16,5 @@ torch>=2.0.0
 # HTTP client for G2P service communication
 requests>=2.28.0
 
-# Optional: Enhanced audio format support
-# soundfile>=0.12.1  # For additional audio formats
-# pydub>=0.25.1      # For MP3 support (requires ffmpeg)
+kokoro>=0.9.4
+soundfile
