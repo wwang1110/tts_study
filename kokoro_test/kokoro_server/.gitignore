@@ -1,0 +1,2 @@
+# Ignore the cache directory used for Hugging Face models and voices
+.cache/

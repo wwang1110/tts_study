@@ -79,7 +79,8 @@ class SafePipeline:
                         # This will download the file and cache it locally
                         hf_hub_download(
                             repo_id=self.repo_id,
-                            filename=voice_file
+                            filename=voice_file,
+                            cache_dir=self.cache_dir
                         )
                         # We don't need to load the tensor here, just ensure it's downloaded
                         logger.debug(f"Successfully preloaded voice: {voice_name}")
