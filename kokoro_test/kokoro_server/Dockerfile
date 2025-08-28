@@ -1,15 +1,10 @@
 # Multi-stage Docker build for TTS Service
 # License-safe TTS service that communicates with GPL-isolated G2P service
 
-FROM python:3.11-slim AS base
+FROM pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime AS base
 
 # Set working directory
 WORKDIR /app
-
-# Install system dependencies, torch(cpu)
-RUN apt-get update && \
-    rm -rf /var/lib/apt/lists/* && \
-    pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu torch
 
 # Copy cache directory
 COPY ./.cache /app/.cache
