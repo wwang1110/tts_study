@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from safe_pipeline import SafePipeline
+from .kokoro import SafePipeline
 
 # Configuration
 class Config:
@@ -738,14 +738,21 @@ async def list_voices():
     """List available voices"""
     logger.info("Voices list requested")
     
-    # Basic voice list - in production this would query the actual voice files
-    voices = [
-        "af_heart", "af_bella", "af_sarah", "af_nicole", "af_sky",
-        "am_adam", "am_michael", "am_eric", "am_liam", "am_onyx"
-    ]
-    
-    logger.debug(f"Returning {len(voices)} available voices")
-    return {"voices": voices}
+    if pipeline and pipeline.voices:
+        available_voices = sorted(list(pipeline.voices.keys()))
+        logger.debug(f"Returning {len(available_voices)} cached voices")
+        return {"voices": available_voices}
+
+    # Fallback to querying the repo if pipeline not ready or no voices loaded
+    try:
+        from huggingface_hub import list_repo_files
+        repo_files = list_repo_files(repo_id='hexgrad/Kokoro-82M', repo_type='model')
+        voices = sorted([f.split('/')[-1].replace('.pt', '') for f in repo_files if f.startswith('voices/') and f.endswith('.pt')])
+        logger.debug(f"Returning {len(voices)} voices from repo listing")
+        return {"voices": voices}
+    except Exception as e:
+        logger.error(f"Could not retrieve voice list from HuggingFace Hub: {e}")
+        raise HTTPException(status_code=500, detail="Could not retrieve voice list")
 
 # Test endpoint for smart_split functionality
 @app.post("/test/smart-split")

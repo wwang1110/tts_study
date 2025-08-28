@@ -10,7 +10,7 @@ Safe for production use with commercial licenses.
 """
 
 from kokoro.model import KModel
-from huggingface_hub import hf_hub_download
+from huggingface_hub import hf_hub_download, list_repo_files
 from typing import Optional, Union, Generator
 import torch
 import logging
@@ -30,7 +30,8 @@ class SafePipeline:
         self,
         repo_id: str = 'hexgrad/Kokoro-82M',
         model: Optional[KModel] = None,
-        device: Optional[str] = None
+        device: Optional[str] = None,
+        cache_dir: Optional[str] = './.cache'
     ):
         """
         Initialize safe pipeline.
@@ -42,6 +43,7 @@ class SafePipeline:
         """
         self.repo_id = repo_id
         self.voices = {}
+        self.cache_dir = cache_dir
         
         # Initialize model
         if isinstance(model, KModel):
@@ -57,8 +59,37 @@ class SafePipeline:
                 else:
                     device = 'cpu'
             
-            self.model = KModel(repo_id=repo_id).to(device).eval()
+            self.model = KModel(repo_id=repo_id, cache_dir=cache_dir).to(device).eval()
+        
+        # Preload all voices
+        self._preload_voices()
     
+    def _preload_voices(self):
+        """Download and cache all available voices from the HuggingFace Hub."""
+        logger.info("Preloading all available voices...")
+        try:
+            # Get a list of all files in the 'voices' directory of the repo
+            repo_files = list_repo_files(repo_id=self.repo_id, repo_type='model')
+            voice_files = [f for f in repo_files if f.startswith('voices/') and f.endswith('.pt')]
+            
+            for voice_file in voice_files:
+                voice_name = voice_file.split('/')[-1].replace('.pt', '')
+                if voice_name not in self.voices:
+                    try:
+                        # This will download the file and cache it locally
+                        hf_hub_download(
+                            repo_id=self.repo_id,
+                            filename=voice_file
+                        )
+                        # We don't need to load the tensor here, just ensure it's downloaded
+                        logger.debug(f"Successfully preloaded voice: {voice_name}")
+                    except Exception as e:
+                        logger.warning(f"Failed to preload voice {voice_name}: {e}")
+            
+            logger.info(f"✅ Preloaded {len(voice_files)} voices.")
+            
+        except Exception as e:
+            logger.error(f"❌ Could not preload voices: {e}")
     def load_voice(self, voice: Union[str, torch.FloatTensor]) -> torch.FloatTensor:
         """
         Load voice embedding from file or return existing tensor.
@@ -82,11 +113,15 @@ class SafePipeline:
         else:
             voice_path = hf_hub_download(
                 repo_id=self.repo_id, 
-                filename=f'voices/{voice}.pt'
+                filename=f'voices/{voice}.pt',
+                cache_dir=self.cache_dir
             )
         
-        voice_tensor = torch.load(voice_path, weights_only=True)
+        # Load the tensor and cache it in memory
+        voice_tensor = torch.load(voice_path, map_location=self.model.device, weights_only=True)
         self.voices[voice] = voice_tensor
+        
+        logger.debug(f"Loaded and cached voice '{voice}' in memory.")
         return voice_tensor
     
     def from_phonemes(
