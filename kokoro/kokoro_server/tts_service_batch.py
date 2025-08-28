@@ -388,7 +388,18 @@ async def streaming_tts(request: TTSRequest, client_request: Request):
                     )
                     
                     # Submit to batch queue or process directly
-                    if batch_queue and config.dynamic_batching:
+                    # For streaming: bypass batching for first chunk to reduce latency
+                    if chunk_count == 0:
+                        # First chunk: invoke model directly for fastest response
+                        if pipeline is None:
+                            raise Exception("Pipeline not ready")
+                        audio_tensor = pipeline.from_phonemes(
+                            phonemes=phonemes,
+                            voice=request.voice,
+                            speed=request.speed
+                        )
+                    elif batch_queue and config.dynamic_batching:
+                        # Subsequent chunks: use batching for efficiency
                         loop = asyncio.get_event_loop()
                         audio_tensor = await loop.run_in_executor(
                             None,
@@ -398,6 +409,7 @@ async def streaming_tts(request: TTSRequest, client_request: Request):
                             request.speed
                         )
                     else:
+                        # Fallback: direct processing
                         if pipeline is None:
                             raise Exception("Pipeline not ready")
                         audio_tensor = pipeline.from_phonemes(
@@ -444,7 +456,8 @@ async def streaming_tts(request: TTSRequest, client_request: Request):
                         await asyncio.sleep(0.0001)  # Further reduced for ultra-fast streaming
                     
                     chunk_count += 1
-                    logger.info(f"Streamed chunk {chunk_count}: '{text_chunk[:50]}...' -> {len(audio_np)} samples")
+                    processing_method = "direct" if chunk_count == 1 else ("batched" if batch_queue and config.dynamic_batching else "direct")
+                    logger.info(f"Streamed chunk {chunk_count} ({processing_method}): '{text_chunk[:50]}...' -> {len(audio_np)} samples")
                     
                 except Exception as e:
                     # Log error but continue with next chunk
