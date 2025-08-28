@@ -89,6 +89,7 @@ class SafePipeline:
             
         except Exception as e:
             logger.error(f"❌ Could not preload voices: {e}")
+    
     def load_voice(self, voice: Union[str, torch.FloatTensor]) -> torch.FloatTensor:
         """
         Load voice embedding from file or return existing tensor.
