@@ -262,6 +262,11 @@ class TTSStreamingClientWithPlayback:
             "playback_started": False
         }
         
+        print(f"📝 Requesting TTS stream for {len(text)} chars...")
+        print("="*80)
+        print(text)
+        print("="*80)
+
         start_time = time.time()
         first_byte_time = None
         first_playback_time = None
