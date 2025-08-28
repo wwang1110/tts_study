@@ -2,11 +2,15 @@ from .istftnet import Decoder
 from .modules import CustomAlbert, ProsodyPredictor, TextEncoder
 from dataclasses import dataclass
 from huggingface_hub import hf_hub_download
-from loguru import logger
+import logging
 from transformers import AlbertConfig
 from typing import Dict, Optional, Union
 import json
 import torch
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class KModel(torch.nn.Module):
     '''
