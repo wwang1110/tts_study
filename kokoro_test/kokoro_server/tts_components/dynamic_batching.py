@@ -34,16 +34,25 @@ class BatchEntry:
 class SingleProcessBatchQueue:
     """Single-process batching queue using asyncio primitives"""
     
-    def __init__(self, 
+    def __init__(self,
                  max_batch_size: int = 4,
-                 max_wait_ms: int = 50,
-                 min_wait_ms: int = 10,
+                 normal_queue_max_wait_ms: int = 100,
+                 normal_queue_min_wait_ms: int = 30,
+                 high_priority_queue_max_wait_ms: int = 20,
+                 high_priority_queue_min_wait_ms: int = 10,
                  max_queue_size: int = 1000):
         self.max_batch_size = max_batch_size
-        self.max_wait_ms = max_wait_ms
-        self.min_wait_ms = min_wait_ms
         
-        self.queue = asyncio.Queue(maxsize=max_queue_size)
+        # Normal Priority Queue
+        self.normal_queue_max_wait_ms = normal_queue_max_wait_ms
+        self.normal_queue_min_wait_ms = normal_queue_min_wait_ms
+        
+        # High Priority Queue
+        self.high_priority_queue_max_wait_ms = high_priority_queue_max_wait_ms
+        self.high_priority_queue_min_wait_ms = high_priority_queue_min_wait_ms
+        
+        self.normal_queue = asyncio.Queue(maxsize=max_queue_size)
+        self.high_priority_queue = asyncio.Queue(maxsize=max_queue_size)
         self.worker_task: Optional[asyncio.Task] = None
         self.running = False
         self.pipeline = None  # Will be set during initialization
@@ -81,7 +90,7 @@ class SingleProcessBatchQueue:
         self.thread_pool.shutdown(wait=True)
         logger.info("Batch worker stopped")
     
-    async def submit_for_batching(self, phonemes: str, voice: str, speed: float = 1.0) -> torch.FloatTensor:
+    async def submit_for_batching(self, phonemes: str, voice: str, speed: float = 1.0, high_priority: bool = False) -> torch.FloatTensor:
         """Submit request for batching and return result via Future"""
         if not self.pipeline:
             raise RuntimeError("Pipeline not initialized")
@@ -94,8 +103,11 @@ class SingleProcessBatchQueue:
         )
         
         try:
-            # Put in queue (non-blocking)
-            self.queue.put_nowait(entry)
+            # Put in the appropriate queue (non-blocking)
+            if high_priority:
+                self.high_priority_queue.put_nowait(entry)
+            else:
+                self.normal_queue.put_nowait(entry)
         except asyncio.QueueFull:
             raise RuntimeError("Batch queue is full - service overloaded")
         
@@ -126,32 +138,45 @@ class SingleProcessBatchQueue:
         logger.info("Batch worker loop ended")
     
     async def _collect_batch(self) -> List[BatchEntry]:
-        """Collect entries for a batch with adaptive timeout"""
+        """Collect entries for a batch with adaptive timeout, prioritizing the high-priority queue."""
         batch = []
         
-        # Wait for first request (blocking with timeout)
-        try:
-            first_entry = await asyncio.wait_for(self.queue.get(), timeout=0.1)
-            batch.append(first_entry)
-        except asyncio.TimeoutError:
-            return []  # No requests available
+        # 1. Prioritize the high-priority queue
+        while not self.high_priority_queue.empty() and len(batch) < self.max_batch_size:
+            batch.append(self.high_priority_queue.get_nowait())
         
-        # Calculate adaptive wait time based on current batch size
-        wait_time_ms = self.max_wait_ms if len(batch) == 1 else self.min_wait_ms
-        deadline = time.time() + (wait_time_ms / 1000.0)
+        # If we have a high-priority item, use the shorter timeout
+        is_high_priority_batch = len(batch) > 0
         
-        # Collect additional requests until batch is full or timeout
-        while len(batch) < self.max_batch_size and time.time() < deadline:
-            remaining_time = deadline - time.time()
-            if remaining_time <= 0:
-                break
-            
+        # 2. If the batch is not full, check the normal queue
+        if len(batch) < self.max_batch_size:
             try:
-                entry = await asyncio.wait_for(self.queue.get(), timeout=remaining_time)
-                batch.append(entry)
+                # Wait for the first item from the normal queue if the batch is empty
+                if not batch:
+                    first_entry = await asyncio.wait_for(self.normal_queue.get(), timeout=0.1)
+                    batch.append(first_entry)
+
+                # Determine wait time based on whether we already have high-priority items
+                if is_high_priority_batch:
+                    wait_time_ms = self.high_priority_queue_max_wait_ms if len(batch) == 1 else self.high_priority_queue_min_wait_ms
+                else:
+                    wait_time_ms = self.normal_queue_max_wait_ms if len(batch) == 1 else self.normal_queue_min_wait_ms
+                
+                deadline = time.time() + (wait_time_ms / 1000.0)
+                
+                # Fill the rest of the batch from the normal queue
+                while len(batch) < self.max_batch_size and time.time() < deadline:
+                    remaining_time = deadline - time.time()
+                    if remaining_time <= 0:
+                        break
+                    try:
+                        entry = await asyncio.wait_for(self.normal_queue.get(), timeout=remaining_time)
+                        batch.append(entry)
+                    except asyncio.TimeoutError:
+                        break
             except asyncio.TimeoutError:
-                break  # Timeout reached, process current batch
-        
+                pass # It's okay if the normal queue is empty
+
         return batch
     
     async def _process_batch(self, batch: List[BatchEntry]):
@@ -261,6 +286,7 @@ class SingleProcessBatchQueue:
             "total_batches": self.total_batches,
             "total_requests": self.total_requests,
             "avg_batch_size": sum(self.batch_sizes) / len(self.batch_sizes) if self.batch_sizes else 0,
-            "current_queue_size": self.queue.qsize(),
+            "current_normal_queue_size": self.normal_queue.qsize(),
+            "current_high_priority_queue_size": self.high_priority_queue.qsize(),
             "worker_running": self.running
         }

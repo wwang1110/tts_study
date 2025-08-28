@@ -16,6 +16,10 @@ services:
       - FIRST_CHUNK_MAX_TOKENS=15
       - HOST=0.0.0.0
       - PORT=8880
+      - NORMAL_QUEUE_MAX_WAIT_MS=100
+      - NORMAL_QUEUE_MIN_WAIT_MS=30
+      - HIGH_PRIORITY_QUEUE_MAX_WAIT_MS=20
+      - HIGH_PRIORITY_QUEUE_MIN_WAIT_MS=10
     volumes:
       # Mount Kokoro models directory (adjust path as needed)
       - ./models:/app/models:ro

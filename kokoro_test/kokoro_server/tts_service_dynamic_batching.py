@@ -53,8 +53,10 @@ logger.info(f"⚡ First Chunk Max Tokens: {config.first_chunk_max_tokens}")
 logger.info(f"🌐 Server Address: http://{config.host}:{config.port}")
 logger.info(f"  DYNAMIC_BATCHING: {config.dynamic_batching}")
 logger.info(f"  KOKORO_MAX_BATCH_SIZE: {config.kokoro_max_batch_size}")
-logger.info(f"  KOKORO_MAX_WAIT_MS: {config.kokoro_max_wait_ms}")
-logger.info(f"  KOKORO_MIN_WAIT_MS: {config.kokoro_min_wait_ms}")
+logger.info(f"  NORMAL_QUEUE_MAX_WAIT_MS: {config.normal_queue_max_wait_ms}")
+logger.info(f"  NORMAL_QUEUE_MIN_WAIT_MS: {config.normal_queue_min_wait_ms}")
+logger.info(f"  HIGH_PRIORITY_QUEUE_MAX_WAIT_MS: {config.high_priority_queue_max_wait_ms}")
+logger.info(f"  HIGH_PRIORITY_QUEUE_MIN_WAIT_MS: {config.high_priority_queue_min_wait_ms}")
 logger.info(f"  MAX_QUEUE_SIZE: {config.max_queue_size}")
 logger.info("=" * 60)
 logger.info("✅ SafePipeline initialized successfully")
@@ -87,8 +89,10 @@ async def lifespan(app: FastAPI):
         if config.dynamic_batching:
             batch_queue = SingleProcessBatchQueue(
                 max_batch_size=config.kokoro_max_batch_size,
-                max_wait_ms=config.kokoro_max_wait_ms,
-                min_wait_ms=config.kokoro_min_wait_ms,
+                normal_queue_max_wait_ms=config.normal_queue_max_wait_ms,
+                normal_queue_min_wait_ms=config.normal_queue_min_wait_ms,
+                high_priority_queue_max_wait_ms=config.high_priority_queue_max_wait_ms,
+                high_priority_queue_min_wait_ms=config.high_priority_queue_min_wait_ms,
                 max_queue_size=config.max_queue_size
             )
             batch_queue.set_pipeline(pipeline)
@@ -366,10 +370,13 @@ async def streaming_tts(request: StreamingTTSRequest, client_request: Request):
                     
                     # Submit to batch queue or process directly
                     if batch_queue and config.dynamic_batching:
+                        # First chunk of a stream is high priority
+                        is_first_chunk = chunk_count == 0
                         audio_tensor = await batch_queue.submit_for_batching(
                             phonemes=phonemes,
                             voice=request.voice,
-                            speed=request.speed
+                            speed=request.speed,
+                            high_priority=is_first_chunk
                         )
                     else:
                         audio_tensor = pipeline.from_phonemes(
@@ -525,8 +532,10 @@ async def get_config():
         "port": config.port,
         "dynamic_batching_enabled": config.dynamic_batching,
         "kokoro_max_batch_size": config.kokoro_max_batch_size,
-        "kokoro_max_wait_ms": config.kokoro_max_wait_ms,
-        "kokoro_min_wait_ms": config.kokoro_min_wait_ms,
+        "normal_queue_max_wait_ms": config.normal_queue_max_wait_ms,
+        "normal_queue_min_wait_ms": config.normal_queue_min_wait_ms,
+        "high_priority_queue_max_wait_ms": config.high_priority_queue_max_wait_ms,
+        "high_priority_queue_min_wait_ms": config.high_priority_queue_min_wait_ms,
     }
     
     logger.debug(f"Returning configuration: {config_data}")
@@ -544,7 +553,8 @@ async def batching_health():
         "batching_enabled": config.dynamic_batching,
         "status": "healthy" if batch_queue.running else "unhealthy",
         "queue_status": {
-            "current_size": stats["current_queue_size"],
+            "current_normal_queue_size": stats["current_normal_queue_size"],
+            "current_high_priority_queue_size": stats["current_high_priority_queue_size"],
             "worker_running": stats["worker_running"]
         },
         "performance": {
@@ -554,8 +564,10 @@ async def batching_health():
         },
         "config": {
             "max_batch_size": config.kokoro_max_batch_size,
-            "max_wait_ms": config.kokoro_max_wait_ms,
-            "min_wait_ms": config.kokoro_min_wait_ms
+            "normal_queue_max_wait_ms": config.normal_queue_max_wait_ms,
+            "normal_queue_min_wait_ms": config.normal_queue_min_wait_ms,
+            "high_priority_queue_max_wait_ms": config.high_priority_queue_max_wait_ms,
+            "high_priority_queue_min_wait_ms": config.high_priority_queue_min_wait_ms
         }
     }
 

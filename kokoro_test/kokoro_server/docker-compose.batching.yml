@@ -19,8 +19,10 @@ services:
       # Dynamic Batching Configuration
       - ENABLE_KOKORO_BATCHING=true
       - KOKORO_MAX_BATCH_SIZE=32
-      - KOKORO_MAX_WAIT_MS=30
-      - KOKORO_MIN_WAIT_MS=10
+      - NORMAL_QUEUE_MAX_WAIT_MS=100
+      - NORMAL_QUEUE_MIN_WAIT_MS=30
+      - HIGH_PRIORITY_QUEUE_MAX_WAIT_MS=20
+      - HIGH_PRIORITY_QUEUE_MIN_WAIT_MS=10
       - MAX_QUEUE_SIZE=1000
     volumes:
       # Mount Kokoro models directory (adjust path as needed)
