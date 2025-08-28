@@ -39,6 +39,24 @@ from tts_components import (
 
 # Global configuration and pipeline
 config = Config()
+
+# Print configuration info
+logger.info("=" * 60)
+logger.info("📊 SafePipeline Configuration:")
+logger.info(f"🔄 G2P Service URL: {config.g2p_url}")
+logger.info(f"⏱️ G2P Timeout: {config.g2p_timeout} seconds")
+logger.info(f"📦 Max Batch Size: {config.max_batch_size}")
+logger.info(f"🧩 Max Tokens Per Chunk: {config.max_tokens_per_chunk}")
+logger.info(f"⚡ First Chunk Max Tokens: {config.first_chunk_max_tokens}")
+logger.info(f"🌐 Server Address: http://{config.host}:{config.port}")
+logger.info(f"  DYNAMIC_BATCHING: {config.dynamic_batching}")
+logger.info(f"  KOKORO_MAX_BATCH_SIZE: {config.kokoro_max_batch_size}")
+logger.info(f"  KOKORO_MAX_WAIT_MS: {config.kokoro_max_wait_ms}")
+logger.info(f"  KOKORO_MIN_WAIT_MS: {config.kokoro_min_wait_ms}")
+logger.info(f"  MAX_QUEUE_SIZE: {config.max_queue_size}")
+logger.info("=" * 60)
+logger.info("✅ SafePipeline initialized successfully")
+
 pipeline = None
 # Global aiohttp session for connection pooling
 g2p_session = None
