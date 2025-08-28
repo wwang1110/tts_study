@@ -25,19 +25,18 @@ logger = logging.getLogger(__name__)
 
 # Import our license-safe pipeline
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from kokoro import SafePipeline
+from kokoro.safe_pipeline import SafePipeline
 from tts_components import (
     Config,
     TTSRequest,
     BatchTTSRequest,
-    StreamingTTSRequest,
+    ThreadBatchingHelper,
     simple_smart_split,
     audio_to_wav_bytes,
     audio_to_pcm_bytes,
     create_wav_header,
     text_to_phonemes,
 )
-from tts_components.dynamic_batching import SingleProcessBatchQueue
 
 # Global configuration and pipeline
 config = Config()
@@ -61,7 +60,7 @@ logger.info("=" * 60)
 pipeline = None
 # Global aiohttp session for connection pooling
 g2p_session = None
-batch_queue: Optional[SingleProcessBatchQueue] = None
+batch_queue: Optional[ThreadBatchingHelper] = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -84,14 +83,14 @@ async def lifespan(app: FastAPI):
 
         # Initialize batching if enabled
         if config.dynamic_batching:
-            batch_queue = SingleProcessBatchQueue(
+            batch_queue = ThreadBatchingHelper(
                 max_batch_size=config.kokoro_max_batch_size,
                 max_wait_ms=config.kokoro_max_wait_ms,
                 min_wait_ms=config.kokoro_min_wait_ms,
                 max_queue_size=config.max_queue_size
             )
             batch_queue.set_pipeline(pipeline)
-            await batch_queue.start_worker()
+            batch_queue.start()
             logger.info("✅ Dynamic batching enabled")
         else:
             logger.info("ℹ️ Dynamic batching disabled")
@@ -107,7 +106,7 @@ async def lifespan(app: FastAPI):
         await g2p_session.close()
         logger.info("G2P session pool closed")
     if batch_queue:
-        await batch_queue.stop_worker()
+        batch_queue.stop()
         logger.info("✅ Batch queue stopped")
     logger.info("TTS service shutting down...")
 
@@ -174,11 +173,14 @@ async def single_tts(request: TTSRequest):
         
         # Step 2: Submit to batch queue or process directly
         if batch_queue and config.dynamic_batching:
-            # Use dynamic batching
-            audio_tensor = await batch_queue.submit_for_batching(
-                phonemes=phonemes,
-                voice=request.voice,
-                speed=request.speed
+            # Use two-thread optimized dynamic batching (run in thread pool to avoid blocking)
+            loop = asyncio.get_event_loop()
+            audio_tensor = await loop.run_in_executor(
+                None,
+                batch_queue.submit_for_batching,
+                phonemes,
+                request.voice,
+                request.speed
             )
         else:
             # Direct processing (fallback)
@@ -239,7 +241,8 @@ async def batch_tts(batch_request: BatchTTSRequest):
         
         # Step 2: Submit all to batch queue or process directly
         if batch_queue and config.dynamic_batching:
-            # Use dynamic batching
+            # Use two-thread optimized dynamic batching
+            loop = asyncio.get_event_loop()
             kokoro_tasks = []
             valid_requests = []
             for i, (req, phonemes_result) in enumerate(zip(batch_request.requests, phonemes_list)):
@@ -247,11 +250,17 @@ async def batch_tts(batch_request: BatchTTSRequest):
                     logger.error(f"G2P failed for batch item {i}: {phonemes_result}")
                     continue # Skip failed G2P requests
                 
+                if not isinstance(phonemes_result, str):
+                    logger.error(f"Invalid phonemes result type for batch item {i}: {type(phonemes_result)}")
+                    continue
+                
                 valid_requests.append((req, phonemes_result))
-                task = batch_queue.submit_for_batching(
-                    phonemes=phonemes_result,
-                    voice=req.voice,
-                    speed=req.speed
+                task = loop.run_in_executor(
+                    None,
+                    batch_queue.submit_for_batching,
+                    phonemes_result,
+                    req.voice,
+                    req.speed
                 )
                 kokoro_tasks.append(task)
             
@@ -266,11 +275,17 @@ async def batch_tts(batch_request: BatchTTSRequest):
             # Direct processing
             results_dict = {}
             for req, phonemes_result in zip(batch_request.requests, phonemes_list):
-                 if isinstance(phonemes_result, Exception):
-                    results_dict[req.text] = phonemes_result
-                    continue
-                 audio = pipeline.from_phonemes(phonemes_result, req.voice, req.speed)
-                 results_dict[req.text] = audio
+                if isinstance(phonemes_result, Exception):
+                   results_dict[req.text] = phonemes_result
+                   continue
+                if pipeline is None:
+                   results_dict[req.text] = Exception("Pipeline not ready")
+                   continue
+                if not isinstance(phonemes_result, str):
+                   results_dict[req.text] = Exception(f"Invalid phonemes type: {type(phonemes_result)}")
+                   continue
+                audio = pipeline.from_phonemes(phonemes_result, req.voice, req.speed)
+                results_dict[req.text] = audio
         
         # Step 3: Create ZIP response
         zip_buffer = io.BytesIO()
@@ -311,7 +326,7 @@ async def batch_tts(batch_request: BatchTTSRequest):
 
 # Mode 3: Streaming TTS with smart_split and G2P
 @app.post("/tts/stream")
-async def streaming_tts(request: StreamingTTSRequest, client_request: Request):
+async def streaming_tts(request: TTSRequest, client_request: Request):
     """Streaming text-to-speech conversion with chunk-level batching"""
     if not pipeline:
         raise HTTPException(status_code=503, detail="TTS pipeline not ready")
@@ -365,12 +380,17 @@ async def streaming_tts(request: StreamingTTSRequest, client_request: Request):
                     
                     # Submit to batch queue or process directly
                     if batch_queue and config.dynamic_batching:
-                        audio_tensor = await batch_queue.submit_for_batching(
-                            phonemes=phonemes,
-                            voice=request.voice,
-                            speed=request.speed
+                        loop = asyncio.get_event_loop()
+                        audio_tensor = await loop.run_in_executor(
+                            None,
+                            batch_queue.submit_for_batching,
+                            phonemes,
+                            request.voice,
+                            request.speed
                         )
                     else:
+                        if pipeline is None:
+                            raise Exception("Pipeline not ready")
                         audio_tensor = pipeline.from_phonemes(
                             phonemes=phonemes,
                             voice=request.voice,
