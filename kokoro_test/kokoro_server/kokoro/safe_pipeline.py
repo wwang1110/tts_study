@@ -29,10 +29,7 @@ class SafePipeline:
     
     def __init__(
         self,
-        repo_id: str = 'hexgrad/Kokoro-82M',
-        model: Optional[KModel] = None,
-        device: Optional[str] = None,
-        cache_dir: Optional[str] = './.cache'
+        cache_dir: Optional[str]
     ):
         """
         Initialize safe pipeline.
@@ -42,25 +39,19 @@ class SafePipeline:
             model: Pre-initialized KModel instance
             device: Device to use ('cuda', 'cpu', 'mps', or None for auto)
         """
-        self.repo_id = repo_id
+        self.repo_id = 'hexgrad/Kokoro-82M'
         self.config = None
         self.kokoro = None
         self.voices = {}
         self.cache_dir = cache_dir
         
-        # Initialize model
-        if isinstance(model, KModel):
-            self.model = model
-        else:
-            if device is None:
-                if torch.cuda.is_available():
-                    device = 'cuda'
-                else:
-                    device = 'cpu'
-            
-            self._preload_model()
+        device = 'cpu'
+        if torch.cuda.is_available():
+            device = 'cuda'
+        
+        self._preload_model()
 
-            self.model = KModel(config=self.config, model=self.kokoro).to(device).eval()
+        self.model = KModel(config=self.config, model=self.kokoro).to(device).eval()
         
     def _preload_model(self):
 
