@@ -332,9 +332,11 @@ async def streaming_tts(request: TTSRequest, client_request: Request):
         raise HTTPException(status_code=503, detail="TTS pipeline not ready")
     
     async def generate_audio_stream():
+        chunk_count = 0
+        total_bytes_streamed = 0
+        wav_header_sent = False
+        
         try:
-            chunk_count = 0
-            
             # Use smart_split to break text into optimal chunks
             async for text_chunk in simple_smart_split(
                 request.text,
@@ -351,8 +353,13 @@ async def streaming_tts(request: TTSRequest, client_request: Request):
                     silence_samples = int(pause_duration * 24000)
                     silence_audio = np.zeros(silence_samples, dtype=np.int16)
                     
+                    # Stream silence immediately
                     if request.format.lower() == "wav":
-                        # This is tricky for streaming; for now, we send raw PCM for silence
+                        if not wav_header_sent:
+                            # Send WAV header first (we'll update size later)
+                            wav_header = create_wav_header(0)  # Placeholder size
+                            yield wav_header
+                            wav_header_sent = True
                         silence_bytes = silence_audio.tobytes()
                     else:
                         silence_bytes = silence_audio.tobytes()
@@ -362,7 +369,9 @@ async def streaming_tts(request: TTSRequest, client_request: Request):
                     for i in range(0, len(silence_bytes), chunk_size):
                         if await client_request.is_disconnected():
                             return
-                        yield silence_bytes[i:i + chunk_size]
+                        chunk = silence_bytes[i:i + chunk_size]
+                        yield chunk
+                        total_bytes_streamed += len(chunk)
                         await asyncio.sleep(0.01)
                     
                     continue
@@ -397,35 +406,58 @@ async def streaming_tts(request: TTSRequest, client_request: Request):
                             speed=request.speed
                         )
                     
-                    # Convert to bytes
-                    if request.format.lower() == "wav":
-                        # For streaming WAV, we can't know the final size for the header.
-                        # A common approach is to send raw PCM and let the client handle it,
-                        # or use a library that can patch the header later.
-                        # For simplicity, we'll stream raw PCM and the client can reconstruct the WAV.
-                        audio_bytes = audio_to_pcm_bytes(audio_tensor)
+                    # Convert to numpy immediately
+                    if hasattr(audio_tensor, 'numpy'):
+                        audio_np = audio_tensor.numpy()
                     else:
-                        audio_bytes = audio_to_pcm_bytes(audio_tensor)
+                        audio_np = np.array(audio_tensor)
                     
-                    # Stream audio in chunks
-                    chunk_size = 1024
-                    for i in range(0, len(audio_bytes), chunk_size):
+                    # Ensure int16 format
+                    if audio_np.dtype != np.int16:
+                        if audio_np.dtype == np.float32:
+                            audio_np = (audio_np * 32767).astype(np.int16)
+                        else:
+                            audio_np = audio_np.astype(np.int16)
+                    
+                    # Stream this chunk immediately
+                    if request.format.lower() == "wav":
+                        if not wav_header_sent:
+                            # Send WAV header first (we'll update size later)
+                            wav_header = create_wav_header(0)  # Placeholder size
+                            yield wav_header
+                            wav_header_sent = True
+                        chunk_bytes = audio_np.tobytes()
+                    else:
+                        chunk_bytes = audio_np.tobytes()
+                    
+                    # Stream audio chunk in 1024-byte pieces
+                    stream_chunk_size = 1024
+                    for i in range(0, len(chunk_bytes), stream_chunk_size):
                         if await client_request.is_disconnected():
                             return
                         
-                        chunk = audio_bytes[i:i + chunk_size]
-                        yield chunk
-                        await asyncio.sleep(0.001) # smaller delay for faster streaming
+                        stream_chunk = chunk_bytes[i:i + stream_chunk_size]
+                        yield stream_chunk
+                        total_bytes_streamed += len(stream_chunk)
+                        
+                        # Minimal delay for maximum streaming speed
+                        await asyncio.sleep(0.0001)  # Further reduced for ultra-fast streaming
                     
                     chunk_count += 1
+                    logger.info(f"Streamed chunk {chunk_count}: '{text_chunk[:50]}...' -> {len(audio_np)} samples")
                     
                 except Exception as e:
+                    # Log error but continue with next chunk
                     logger.error(f"Error processing chunk {chunk_count}: {e}")
                     continue
-                
+            
         except Exception as e:
+            # Send error as final chunk
+            logger.error(f"Streaming generation error: {str(e)}")
             error_msg = f"Streaming error: {str(e)}"
             yield error_msg.encode()
+        finally:
+            logger.info(f"Streaming completed: {chunk_count} chunks processed, {total_bytes_streamed} total bytes streamed")
     
     media_type = "audio/wav" if request.format.lower() == "wav" else "audio/pcm"
     

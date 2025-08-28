@@ -14,7 +14,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY ./.cache /app/.cache
 COPY ./kokoro /app/kokoro
 COPY ./tts_components /app/tts_components
-COPY ./tts_service_dynamic_batching.py /app/tts_service_dynamic_batching.py
+COPY ./tts_service_batch.py /app/tts_service_batch.py
 
 # Create non-root user for security
 RUN useradd --create-home --shell /bin/bash tts
@@ -25,4 +25,4 @@ USER tts
 EXPOSE 8880
 
 # Run the service with Gunicorn for production
-CMD ["gunicorn", "--bind", "0.0.0.0:8880", "--workers", "1", "--worker-class", "uvicorn.workers.UvicornWorker", "--access-logfile", "-", "--error-logfile", "-", "--log-level", "info", "tts_service_dynamic_batching:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:8880", "--workers", "1", "--worker-class", "uvicorn.workers.UvicornWorker", "--access-logfile", "-", "--error-logfile", "-", "--log-level", "info", "tts_service_batch:app"]

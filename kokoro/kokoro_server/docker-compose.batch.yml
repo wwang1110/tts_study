@@ -50,6 +50,9 @@ services:
 
   # G2P service dependency (can be external or included)
   g2p-service:
+    build:
+      context: ../kokoro_g2p_service
+      dockerfile: Dockerfile
     image: kokoro-g2p-service:latest
     container_name: kokoro-g2p-service-${COMPOSE_PROJECT_NAME:-default}
     ports:
