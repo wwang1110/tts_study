@@ -2,9 +2,9 @@ services:
   tts-service-batching:
     build:
       context: .
-      dockerfile: Dockerfile.batching
-    image: kokoro-tts-service-batching:latest
-    container_name: kokoro-tts-service-batching-${COMPOSE_PROJECT_NAME:-default}
+      dockerfile: Dockerfile.batch
+    image: kokoro-tts-service-batch:latest
+    container_name: kokoro-tts-service-batch-${COMPOSE_PROJECT_NAME:-default}
     ports:
       - "8880:8880" # Use a different host port to avoid conflicts
     environment:
@@ -21,7 +21,7 @@ services:
       - KOKORO_MAX_BATCH_SIZE=32
       - KOKORO_MAX_WAIT_MS=30
       - KOKORO_MIN_WAIT_MS=10
-      - MAX_QUEUE_SIZE=1000
+      - MAX_QUEUE_SIZE=512
     volumes:
       # Mount Kokoro models directory (adjust path as needed)
       - ./models:/app/models:ro
