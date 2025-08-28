@@ -7,40 +7,35 @@ Implements three modes: single TTS, batch TTS, and streaming TTS with smart_spli
 import asyncio
 import base64
 import io
-import re
 import zipfile
 from contextlib import asynccontextmanager
 from typing import List, Optional, AsyncGenerator, Tuple
-import wave
 import numpy as np
 import logging
+import sys
+import os
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse, Response
-from pydantic import BaseModel, Field
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Import our license-safe pipeline
-import sys
-import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from kokoro import SafePipeline
-
-# Configuration
-class Config:
-    """Service configuration"""
-    def __init__(self):
-        self.g2p_url = os.getenv("G2P_SERVICE_URL")
-        self.g2p_timeout = int(os.getenv("G2P_TIMEOUT"))
-        self.max_batch_size = int(os.getenv("MAX_BATCH_SIZE"))
-        self.max_tokens_per_chunk = int(os.getenv("MAX_TOKENS_PER_CHUNK"))
-        # First chunk optimization for faster time to first token - made even smaller
-        self.first_chunk_max_tokens = int(os.getenv("FIRST_CHUNK_MAX_TOKENS"))
-        self.host = os.getenv("HOST", "0.0.0.0")
-        self.port = int(os.getenv("PORT", "8880"))
+from tts_components import (
+    Config,
+    TTSRequest,
+    BatchTTSRequest,
+    StreamingTTSRequest,
+    simple_smart_split,
+    audio_to_wav_bytes,
+    audio_to_pcm_bytes,
+    create_wav_header,
+    text_to_phonemes,
+)
 
 # Global configuration and pipeline
 config = Config()
@@ -56,17 +51,6 @@ async def lifespan(app: FastAPI):
     try:
         logger.info("Initializing SafePipeline...")
         pipeline = SafePipeline(cache_dir="./.cache")
-        # Print configuration info
-        logger.info("=" * 60)
-        logger.info("📊 SafePipeline Configuration:")
-        logger.info(f"🔄 G2P Service URL: {config.g2p_url}")
-        logger.info(f"⏱️ G2P Timeout: {config.g2p_timeout} seconds")
-        logger.info(f"📦 Max Batch Size: {config.max_batch_size}")
-        logger.info(f"🧩 Max Tokens Per Chunk: {config.max_tokens_per_chunk}")
-        logger.info(f"⚡ First Chunk Max Tokens: {config.first_chunk_max_tokens}")
-        logger.info(f"🌐 Server Address: http://{config.host}:{config.port}")
-        logger.info("=" * 60)
-        logger.info("✅ SafePipeline initialized successfully")
         
         # Initialize persistent aiohttp session for G2P service (if available)
         try:
@@ -97,326 +81,6 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
-
-# Pydantic models
-class TTSRequest(BaseModel):
-    text: str = Field(..., description="Text to convert to speech")
-    voice: str = Field(default="af_heart", description="Voice name")
-    language: str = Field(default="en-US", description="Language code")
-    speed: float = Field(default=1.0, ge=0.25, le=4.0, description="Speech speed")
-    format: str = Field(default="wav", description="Audio format (wav/pcm)")
-
-class BatchTTSRequest(BaseModel):
-    requests: List[TTSRequest] = Field(..., description="List of TTS requests")
-
-class StreamingTTSRequest(BaseModel):
-    text: str = Field(..., description="Text to convert to speech")
-    voice: str = Field(default="af_heart", description="Voice name")
-    language: str = Field(default="en-US", description="Language code")
-    speed: float = Field(default=1.0, ge=0.25, le=4.0, description="Speech speed")
-    format: str = Field(default="wav", description="Audio format")
-
-# Optimized smart_split implementation for faster time to first token
-async def simple_smart_split(
-    text: str,
-    max_tokens: Optional[int] = None,
-) -> AsyncGenerator[str, None]:
-    """
-    Optimized version of smart_split that prioritizes fast time to first token.
-    
-    The first chunk is kept small (25-50 tokens, ideally one sentence) for faster
-    initial audio generation, while subsequent chunks use normal sizing for quality.
-    
-    Args:
-        text: Input text to split
-        max_tokens: Maximum tokens per chunk for non-first chunks (uses config default if None)
-        
-    Yields:
-        Text chunks (first chunk optimized for speed, rest for quality)
-    """
-    # Use config defaults if not specified
-    if max_tokens is None:
-        max_tokens = config.max_tokens_per_chunk
-    
-    # Simple approximation: 1 token ≈ 4 characters
-    max_chars = max_tokens * 4
-    
-    # First chunk optimization parameters - FORCE ultra-small for debugging
-    first_chunk_max_chars = 60  # Force 60 chars max (15 tokens) regardless of config
-    
-    logger.debug(f"FORCED first_chunk_max_chars: {first_chunk_max_chars}")
-    
-    # Handle pause tags first
-    pause_pattern = re.compile(r'\[pause:(\d+(?:\.\d+)?)s\]', re.IGNORECASE)
-    parts = pause_pattern.split(text)
-    
-    is_first_text_chunk = True
-    
-    for i, part in enumerate(parts):
-        if i % 2 == 1:  # This is a pause duration
-            # Yield pause as special marker
-            yield f"__PAUSE__{part}__"
-            continue
-            
-        if not part.strip():
-            continue
-            
-        # Split text part into sentences
-        sentences = re.split(r'([.!?;:])\s*', part)
-        
-        # Handle first chunk specially for ULTRA-FAST time to first token
-        if is_first_text_chunk and sentences:
-            is_first_text_chunk = False
-            
-            # Try to get the first sentence
-            first_sentence = sentences[0].strip() if sentences[0] else ""
-            first_punct = sentences[1] if len(sentences) > 1 else ""
-            
-            if first_sentence:
-                first_full_sentence = first_sentence + first_punct
-                
-                # ULTRA-AGGRESSIVE first chunk optimization - ALWAYS prioritize speed
-                # Never process more than first_chunk_max_chars, regardless of sentence boundaries
-                logger.debug(f"First sentence length: {len(first_full_sentence)}, max allowed: {first_chunk_max_chars}")
-                logger.debug(f"First sentence: '{first_full_sentence}'")
-                
-                if len(first_full_sentence) <= first_chunk_max_chars:
-                    # Perfect! First sentence fits in first chunk
-                    logger.debug("First sentence fits within limits")
-                    yield first_full_sentence.strip()
-                    remaining_sentences = sentences[2:] if len(sentences) > 2 else []
-                else:
-                    logger.debug("First sentence too long, forcing truncation")
-                    # FORCE ultra-small first chunk regardless of sentence structure
-                    words = first_sentence.split()
-                    truncated_sentence = ""
-                    
-                    # AGGRESSIVE: Take maximum 5-8 words for ultra-fast first response
-                    max_first_words = min(8, len(words))  # Never more than 8 words
-                    
-                    for i, word in enumerate(words[:max_first_words]):
-                        test_sentence = truncated_sentence + (" " if truncated_sentence else "") + word
-                        if len(test_sentence) <= first_chunk_max_chars:
-                            truncated_sentence = test_sentence
-                        else:
-                            break
-                    
-                    # Ensure we have at least 2 words, even if it slightly exceeds limit
-                    if not truncated_sentence and len(words) >= 2:
-                        truncated_sentence = f"{words[0]} {words[1]}"
-                    elif not truncated_sentence:
-                        truncated_sentence = words[0] if words else first_sentence[:first_chunk_max_chars]
-                    
-                    # Yield ultra-small first chunk for maximum speed (no punctuation to avoid incomplete sentences)
-                    yield truncated_sentence.strip()
-                    
-                    # Put ALL remaining content back for normal processing
-                    remaining_words = first_sentence[len(truncated_sentence):].strip()
-                    if remaining_words:
-                        # Reconstruct the remaining sentence with punctuation
-                        remaining_sentences = [remaining_words + first_punct] + sentences[2:]
-                    else:
-                        remaining_sentences = sentences[2:] if len(sentences) > 2 else []
-                
-                # Process remaining sentences with normal chunking logic
-                if remaining_sentences:
-                    current_chunk = ""
-                    for j in range(0, len(remaining_sentences), 2):
-                        sentence = remaining_sentences[j].strip() if j < len(remaining_sentences) else ""
-                        punct = remaining_sentences[j + 1] if j + 1 < len(remaining_sentences) else ""
-                        
-                        if not sentence:
-                            continue
-                            
-                        full_sentence = sentence + punct
-                        
-                        # Check if adding this sentence exceeds max_chars
-                        if len(current_chunk) + len(full_sentence) > max_chars:
-                            # Yield current chunk and start new one
-                            if current_chunk.strip():
-                                yield current_chunk.strip()
-                            current_chunk = full_sentence
-                        else:
-                            # Add to current chunk
-                            if current_chunk:
-                                current_chunk += " " + full_sentence
-                            else:
-                                current_chunk = full_sentence
-                    
-                    # Don't forget the last chunk
-                    if current_chunk.strip():
-                        yield current_chunk.strip()
-            continue
-        
-        # Normal processing for non-first chunks
-        current_chunk = ""
-        for j in range(0, len(sentences), 2):
-            sentence = sentences[j].strip()
-            punct = sentences[j + 1] if j + 1 < len(sentences) else ""
-            
-            if not sentence:
-                continue
-                
-            full_sentence = sentence + punct
-            
-            # Check if adding this sentence exceeds max_chars
-            if len(current_chunk) + len(full_sentence) > max_chars:
-                # Yield current chunk and start new one
-                if current_chunk.strip():
-                    yield current_chunk.strip()
-                current_chunk = full_sentence
-            else:
-                # Add to current chunk
-                if current_chunk:
-                    current_chunk += " " + full_sentence
-                else:
-                    current_chunk = full_sentence
-        
-        # Don't forget the last chunk
-        if current_chunk.strip():
-            yield current_chunk.strip()
-
-# G2P Service Integration
-async def text_to_phonemes(text: str, language: str, g2p_url: Optional[str] = None) -> str:
-    """Convert text to phonemes with aiohttp fallback to requests"""
-    global g2p_session
-    
-    # Use config default if not specified
-    if g2p_url is None:
-        g2p_url = config.g2p_url
-    
-    # Try aiohttp first (fastest)
-    if g2p_session is not None:
-        try:
-            async with g2p_session.post(
-                f"{g2p_url}/convert",
-                json={"text": text, "lang": language}
-            ) as response:
-                response.raise_for_status()
-                
-                data = await response.json()
-                if 'error' in data:
-                    raise RuntimeError(f"G2P service error: {data['error']}")
-                
-                return data['phonemes']
-        except Exception as e:
-            raise RuntimeError(f"G2P service unavailable at {g2p_url}: {e}")
-    
-    # Fallback to requests library (slower but works)
-    else:
-        try:
-            import requests
-            
-            response = requests.post(
-                f"{g2p_url}/convert",
-                json={"text": text, "lang": language},
-                timeout=config.g2p_timeout
-            )
-            response.raise_for_status()
-            
-            data = response.json()
-            if 'error' in data:
-                raise RuntimeError(f"G2P service error: {data['error']}")
-            
-            return data['phonemes']
-            
-        except ImportError:
-            raise RuntimeError("Neither aiohttp nor requests library available for G2P service")
-        except Exception as e:
-            raise RuntimeError(f"G2P service unavailable at {g2p_url}: {e}")
-
-# Utility functions
-def audio_to_wav_bytes(audio_tensor, sample_rate=24000):
-    """Convert audio tensor to WAV bytes"""
-    logger.debug(f"Converting audio to WAV: sample_rate={sample_rate}")
-    
-    # Convert to numpy if it's a tensor
-    if hasattr(audio_tensor, 'numpy'):
-        audio_np = audio_tensor.numpy()
-        logger.debug(f"Converted tensor to numpy: shape={audio_np.shape}, dtype={audio_np.dtype}")
-    else:
-        audio_np = audio_tensor
-        logger.debug(f"Using numpy array: shape={audio_np.shape}, dtype={audio_np.dtype}")
-    
-    # Ensure int16 format
-    original_dtype = audio_np.dtype
-    if audio_np.dtype != np.int16:
-        if audio_np.dtype == np.float32:
-            audio_np = (audio_np * 32767).astype(np.int16)
-            logger.debug(f"Converted float32 to int16: {original_dtype} -> {audio_np.dtype}")
-        else:
-            audio_np = audio_np.astype(np.int16)
-            logger.debug(f"Converted {original_dtype} to int16")
-    else:
-        logger.debug("Audio already in int16 format")
-    
-    # Create WAV file in memory
-    wav_buffer = io.BytesIO()
-    with wave.open(wav_buffer, 'wb') as wav_file:
-        wav_file.setnchannels(1)  # Mono
-        wav_file.setsampwidth(2)  # 16-bit
-        wav_file.setframerate(sample_rate)
-        wav_file.writeframes(audio_np.tobytes())
-    
-    wav_bytes = wav_buffer.getvalue()
-    duration_seconds = len(audio_np) / sample_rate
-    logger.info(f"WAV created: {len(wav_bytes):,} bytes, duration={duration_seconds:.2f}s, samples={len(audio_np):,}")
-    
-    return wav_bytes
-
-def create_wav_header(data_size, sample_rate=24000, channels=1, bits_per_sample=16):
-    """Create WAV header for streaming"""
-    # WAV header structure
-    header = bytearray(44)
-    
-    # RIFF header
-    header[0:4] = b'RIFF'
-    header[4:8] = (36 + data_size).to_bytes(4, 'little')  # File size - 8
-    header[8:12] = b'WAVE'
-    
-    # fmt subchunk
-    header[12:16] = b'fmt '
-    header[16:20] = (16).to_bytes(4, 'little')  # Subchunk1Size
-    header[20:22] = (1).to_bytes(2, 'little')   # AudioFormat (PCM)
-    header[22:24] = channels.to_bytes(2, 'little')  # NumChannels
-    header[24:28] = sample_rate.to_bytes(4, 'little')  # SampleRate
-    header[28:32] = (sample_rate * channels * bits_per_sample // 8).to_bytes(4, 'little')  # ByteRate
-    header[32:34] = (channels * bits_per_sample // 8).to_bytes(2, 'little')  # BlockAlign
-    header[34:36] = bits_per_sample.to_bytes(2, 'little')  # BitsPerSample
-    
-    # data subchunk
-    header[36:40] = b'data'
-    header[40:44] = data_size.to_bytes(4, 'little')  # Subchunk2Size
-    
-    return bytes(header)
-
-def audio_to_pcm_bytes(audio_tensor):
-    """Convert audio tensor to raw PCM bytes"""
-    logger.debug("Converting audio to PCM")
-    
-    if hasattr(audio_tensor, 'numpy'):
-        audio_np = audio_tensor.numpy()
-        logger.debug(f"Converted tensor to numpy: shape={audio_np.shape}, dtype={audio_np.dtype}")
-    else:
-        audio_np = audio_tensor
-        logger.debug(f"Using numpy array: shape={audio_np.shape}, dtype={audio_np.dtype}")
-    
-    original_dtype = audio_np.dtype
-    if audio_np.dtype != np.int16:
-        if audio_np.dtype == np.float32:
-            audio_np = (audio_np * 32767).astype(np.int16)
-            logger.debug(f"Converted float32 to int16: {original_dtype} -> {audio_np.dtype}")
-        else:
-            audio_np = audio_np.astype(np.int16)
-            logger.debug(f"Converted {original_dtype} to int16")
-    else:
-        logger.debug("Audio already in int16 format")
-    
-    pcm_bytes = audio_np.tobytes()
-    duration_seconds = len(audio_np) / 24000  # Assuming 24kHz sample rate
-    logger.info(f"PCM created: {len(pcm_bytes):,} bytes, duration={duration_seconds:.2f}s, samples={len(audio_np):,}")
-    
-    return pcm_bytes
 
 
 # Health check
@@ -467,7 +131,13 @@ async def single_tts(request: TTSRequest):
     try:
         # Convert text to phonemes using G2P service
         logger.debug(f"Converting text to phonemes: '{request.text[:50]}...'")
-        phonemes = await text_to_phonemes(request.text, request.language)
+        phonemes = await text_to_phonemes(
+            request.text,
+            request.language,
+            g2p_session,
+            config.g2p_url,
+            config.g2p_timeout
+        )
         logger.debug(f"G2P conversion successful: {len(phonemes)} phonemes")
         
         # Generate audio from phonemes
@@ -539,7 +209,13 @@ async def batch_tts(batch_request: BatchTTSRequest):
                     logger.debug(f"Processing batch item {i+1}/{len(batch_request.requests)}: voice={req.voice}, text_len={len(req.text)}")
                     
                     # Convert text to phonemes using G2P service
-                    phonemes = await text_to_phonemes(req.text, req.language)
+                    phonemes = await text_to_phonemes(
+                        req.text,
+                        req.language,
+                        g2p_session,
+                        config.g2p_url,
+                        config.g2p_timeout
+                    )
                     
                     # Generate audio from phonemes
                     if pipeline:  # Type guard
@@ -613,7 +289,11 @@ async def streaming_tts(request: StreamingTTSRequest, client_request: Request):
             logger.debug(f"Starting TRUE streaming generation for text: '{request.text[:100]}...'")
             
             # Use smart_split to break text into optimal chunks
-            async for text_chunk in simple_smart_split(request.text):
+            async for text_chunk in simple_smart_split(
+                request.text,
+                config.max_tokens_per_chunk,
+                config.first_chunk_max_tokens
+            ):
                 # Check if client disconnected
                 if await client_request.is_disconnected():
                     logger.info(f"Client disconnected during streaming after {chunk_count} chunks")
@@ -650,7 +330,13 @@ async def streaming_tts(request: StreamingTTSRequest, client_request: Request):
                 # Generate audio for text chunk using G2P + phonemes
                 try:
                     # Convert text chunk to phonemes
-                    phonemes = await text_to_phonemes(text_chunk, request.language)
+                    phonemes = await text_to_phonemes(
+                        text_chunk,
+                        request.language,
+                        g2p_session,
+                        config.g2p_url,
+                        config.g2p_timeout
+                    )
                     
                     # Generate audio from phonemes
                     if pipeline:  # Type guard
@@ -766,7 +452,11 @@ async def test_smart_split(request: dict):
         raise HTTPException(status_code=400, detail="Text is required")
     
     chunks = []
-    async for chunk in simple_smart_split(text):
+    async for chunk in simple_smart_split(
+        text,
+        config.max_tokens_per_chunk,
+        config.first_chunk_max_tokens
+    ):
         chunks.append(chunk)
     
     result = {
@@ -794,7 +484,13 @@ async def test_g2p(request: dict):
         raise HTTPException(status_code=400, detail="Text is required")
     
     try:
-        phonemes = await text_to_phonemes(text, language)
+        phonemes = await text_to_phonemes(
+            text,
+            language,
+            g2p_session,
+            config.g2p_url,
+            config.g2p_timeout
+        )
         result = {
             "text": text,
             "language": language,

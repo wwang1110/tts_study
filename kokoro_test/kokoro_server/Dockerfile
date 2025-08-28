@@ -13,6 +13,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy cache directory
 COPY ./.cache /app/.cache
 COPY ./kokoro /app/kokoro
+COPY ./tts_components /app/tts_components
 COPY ./tts_service.py /app/tts_service.py
 
 # Create non-root user for security
