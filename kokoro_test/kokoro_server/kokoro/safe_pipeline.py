@@ -45,13 +45,13 @@ class SafePipeline:
         self.voices = {}
         self.cache_dir = cache_dir
         
-        device = 'cpu'
+        self.device = 'cpu'
         if torch.cuda.is_available():
-            device = 'cuda'
-        
+            self.device = 'cuda'
+
         self._preload_model()
 
-        self.model = KModel(config=self.config, model=self.kokoro).to(device).eval()
+        self.model = KModel(config=self.config, model=self.kokoro).to(self.device).eval()
         
     def _preload_model(self):
 
@@ -79,7 +79,12 @@ class SafePipeline:
                 if voice_name not in self.voices:
                     try:
                         # This will download the file and cache it locally
-                        hf_hub_download(repo_id=self.repo_id, filename=voice_file, cache_dir=self.cache_dir)
+                        voice_path = hf_hub_download(repo_id=self.repo_id, filename=voice_file, cache_dir=self.cache_dir)
+
+                        # Load the tensor and cache it in memory
+                        voice_tensor = torch.load(voice_path, map_location=self.device, weights_only=True)
+                        self.voices[voice_name] = voice_tensor
+
                         # We don't need to load the tensor here, just ensure it's downloaded
                         logger.debug(f"Successfully preloaded voice: {voice_name}")
                     except Exception as e:
@@ -89,40 +94,6 @@ class SafePipeline:
             
         except Exception as e:
             logger.error(f"❌ Could not preload voices: {e}")
-    
-    def load_voice(self, voice: Union[str, torch.FloatTensor]) -> torch.FloatTensor:
-        """
-        Load voice embedding from file or return existing tensor.
-        
-        Args:
-            voice: Voice name (e.g., 'af_heart') or voice tensor
-            
-        Returns:
-            Voice embedding tensor
-        """
-        if isinstance(voice, torch.FloatTensor):
-            return voice
-            
-        if voice in self.voices:
-            return self.voices[voice]
-        
-        logger.debug(f"Loading voice: {voice}")
-        
-        if voice.endswith('.pt'):
-            voice_path = voice
-        else:
-            voice_path = hf_hub_download(
-                repo_id=self.repo_id, 
-                filename=f'voices/{voice}.pt',
-                cache_dir=self.cache_dir
-            )
-        
-        # Load the tensor and cache it in memory
-        voice_tensor = torch.load(voice_path, map_location=self.model.device, weights_only=True)
-        self.voices[voice] = voice_tensor
-        
-        logger.debug(f"Loaded and cached voice '{voice}' in memory.")
-        return voice_tensor
     
     def from_phonemes(
         self, 
@@ -144,7 +115,7 @@ class SafePipeline:
         if len(phonemes) > 510:
             raise ValueError(f'Phoneme string too long: {len(phonemes)} > 510')
         
-        voice_pack = self.load_voice(voice).to(self.model.device)
+        voice_pack = self.voices[voice].to(self.model.device)
         
         # Use the model directly with phonemes
         # The voice pack needs to be indexed by phoneme length - 1
