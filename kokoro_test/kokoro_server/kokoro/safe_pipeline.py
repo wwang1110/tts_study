@@ -14,6 +14,7 @@ from huggingface_hub import hf_hub_download, list_repo_files
 from typing import Optional, Union, Generator
 import torch
 import logging
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,8 @@ class SafePipeline:
             device: Device to use ('cuda', 'cpu', 'mps', or None for auto)
         """
         self.repo_id = repo_id
+        self.config = None
+        self.kokoro = None
         self.voices = {}
         self.cache_dir = cache_dir
         
@@ -49,24 +52,32 @@ class SafePipeline:
         if isinstance(model, KModel):
             self.model = model
         else:
-            if device == 'cuda' and not torch.cuda.is_available():
-                raise RuntimeError("CUDA requested but not available")
-            if device == 'mps' and not torch.backends.mps.is_available():
-                raise RuntimeError("MPS requested but not available")
             if device is None:
                 if torch.cuda.is_available():
                     device = 'cuda'
                 else:
                     device = 'cpu'
             
-            self.model = KModel(repo_id=repo_id, cache_dir=cache_dir).to(device).eval()
+            self._preload_model()
+
+            self.model = KModel(config=self.config, model=self.kokoro).to(device).eval()
         
-        # Preload all voices
-        self._preload_voices()
-    
-    def _preload_voices(self):
-        """Download and cache all available voices from the HuggingFace Hub."""
-        logger.info("Preloading all available voices...")
+    def _preload_model(self):
+
+        logger.info(f"Loading config from repo: {self.repo_id}")
+        if not isinstance(self.config, dict):
+            if not self.config:
+                logger.debug("No config provided, downloading from HF")
+                self.config = hf_hub_download(repo_id=self.repo_id, filename='config.json', cache_dir=self.cache_dir)
+            with open(self.config, 'r', encoding='utf-8') as r:
+                self.config = json.load(r)
+                logger.debug(f"Loaded config: {self.config}")
+
+        logger.info(f"Loading model from repo: {self.repo_id}")
+        if not self.kokoro:
+            self.kokoro = hf_hub_download(repo_id=self.repo_id, filename=KModel.MODEL_NAMES[self.repo_id], cache_dir=self.cache_dir)
+
+        logger.info("Loading all available voices...")
         try:
             # Get a list of all files in the 'voices' directory of the repo
             repo_files = list_repo_files(repo_id=self.repo_id, repo_type='model')

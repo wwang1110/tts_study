@@ -1,7 +1,6 @@
 from .istftnet import Decoder
 from .modules import CustomAlbert, ProsodyPredictor, TextEncoder
 from dataclasses import dataclass
-from huggingface_hub import hf_hub_download
 import logging
 from transformers import AlbertConfig
 from typing import Dict, Optional, Union
@@ -34,24 +33,12 @@ class KModel(torch.nn.Module):
 
     def __init__(
         self,
-        repo_id: Optional[str] = None,
-        config: Union[Dict, str, None] = None,
-        model: Optional[str] = None,
-        disable_complex: bool = False,
-        cache_dir: Optional[str] = './.cache'
+        config: Union[Dict, str, None],
+        model: Optional[str],
+        disable_complex: bool = False
     ):
         super().__init__()
-        if repo_id is None:
-            repo_id = 'hexgrad/Kokoro-82M'
-            print(f"WARNING: Defaulting repo_id to {repo_id}. Pass repo_id='{repo_id}' to suppress this warning.")
-        self.repo_id = repo_id
-        if not isinstance(config, dict):
-            if not config:
-                logger.debug("No config provided, downloading from HF")
-                config = hf_hub_download(repo_id=repo_id, filename='config.json', cache_dir=cache_dir)
-            with open(config, 'r', encoding='utf-8') as r:
-                config = json.load(r)
-                logger.debug(f"Loaded config: {config}")
+
         self.vocab = config['vocab']
         self.bert = CustomAlbert(AlbertConfig(vocab_size=config['n_token'], **config['plbert']))
         self.bert_encoder = torch.nn.Linear(self.bert.config.hidden_size, config['hidden_dim'])
@@ -68,8 +55,7 @@ class KModel(torch.nn.Module):
             dim_in=config['hidden_dim'], style_dim=config['style_dim'],
             dim_out=config['n_mels'], disable_complex=disable_complex, **config['istftnet']
         )
-        if not model:
-            model = hf_hub_download(repo_id=repo_id, filename=KModel.MODEL_NAMES[repo_id], cache_dir=cache_dir)
+
         for key, state_dict in torch.load(model, map_location='cpu', weights_only=True).items():
             assert hasattr(self, key), key
             try:
