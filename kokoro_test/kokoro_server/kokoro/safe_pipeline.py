@@ -49,6 +49,8 @@ class SafePipeline:
         if torch.cuda.is_available():
             self.device = 'cuda'
 
+        logger.info(f"Using device: {self.device}")
+
         self._preload_model()
 
         self.model = KModel(config=self.config, model=self.kokoro).to(self.device).eval()
