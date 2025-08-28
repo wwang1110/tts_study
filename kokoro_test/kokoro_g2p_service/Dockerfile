@@ -11,6 +11,9 @@ RUN apt-get update && apt-get install -y \
     espeak-ng \
     && rm -rf /var/lib/apt/lists/*
 
+# First, install the CPU-only version of torch to minimize image size
+RUN pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu torch
+
 # Copy requirements and install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
