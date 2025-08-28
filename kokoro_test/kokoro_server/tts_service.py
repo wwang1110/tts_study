@@ -33,14 +33,12 @@ from kokoro import SafePipeline
 class Config:
     """Service configuration"""
     def __init__(self):
-        self.g2p_url = os.getenv("G2P_SERVICE_URL", "http://0.0.0.0:5000")
-        self.g2p_timeout = int(os.getenv("G2P_TIMEOUT", "5"))  # Reduced from 30s to 5s
-        self.max_batch_size = int(os.getenv("MAX_BATCH_SIZE", "50"))
-        self.max_tokens_per_chunk = int(os.getenv("MAX_TOKENS_PER_CHUNK", "400"))
-        self.min_tokens_per_chunk = int(os.getenv("MIN_TOKENS_PER_CHUNK", "100"))
+        self.g2p_url = os.getenv("G2P_SERVICE_URL")
+        self.g2p_timeout = int(os.getenv("G2P_TIMEOUT"))
+        self.max_batch_size = int(os.getenv("MAX_BATCH_SIZE"))
+        self.max_tokens_per_chunk = int(os.getenv("MAX_TOKENS_PER_CHUNK"))
         # First chunk optimization for faster time to first token - made even smaller
-        self.first_chunk_max_tokens = int(os.getenv("FIRST_CHUNK_MAX_TOKENS", "10"))
-        self.first_chunk_min_tokens = int(os.getenv("FIRST_CHUNK_MIN_TOKENS", "5"))
+        self.first_chunk_max_tokens = int(os.getenv("FIRST_CHUNK_MAX_TOKENS"))
         self.host = os.getenv("HOST", "0.0.0.0")
         self.port = int(os.getenv("PORT", "8880"))
 
@@ -58,6 +56,16 @@ async def lifespan(app: FastAPI):
     try:
         logger.info("Initializing SafePipeline...")
         pipeline = SafePipeline(cache_dir="./.cache")
+        # Print configuration info
+        logger.info("=" * 60)
+        logger.info("📊 SafePipeline Configuration:")
+        logger.info(f"🔄 G2P Service URL: {config.g2p_url}")
+        logger.info(f"⏱️ G2P Timeout: {config.g2p_timeout} seconds")
+        logger.info(f"📦 Max Batch Size: {config.max_batch_size}")
+        logger.info(f"🧩 Max Tokens Per Chunk: {config.max_tokens_per_chunk}")
+        logger.info(f"⚡ First Chunk Max Tokens: {config.first_chunk_max_tokens}")
+        logger.info(f"🌐 Server Address: http://{config.host}:{config.port}")
+        logger.info("=" * 60)
         logger.info("✅ SafePipeline initialized successfully")
         
         # Initialize persistent aiohttp session for G2P service (if available)
@@ -112,7 +120,6 @@ class StreamingTTSRequest(BaseModel):
 async def simple_smart_split(
     text: str,
     max_tokens: Optional[int] = None,
-    min_tokens: Optional[int] = None
 ) -> AsyncGenerator[str, None]:
     """
     Optimized version of smart_split that prioritizes fast time to first token.
@@ -123,7 +130,6 @@ async def simple_smart_split(
     Args:
         text: Input text to split
         max_tokens: Maximum tokens per chunk for non-first chunks (uses config default if None)
-        min_tokens: Minimum tokens per chunk for non-first chunks (uses config default if None)
         
     Yields:
         Text chunks (first chunk optimized for speed, rest for quality)
@@ -131,16 +137,12 @@ async def simple_smart_split(
     # Use config defaults if not specified
     if max_tokens is None:
         max_tokens = config.max_tokens_per_chunk
-    if min_tokens is None:
-        min_tokens = config.min_tokens_per_chunk
     
     # Simple approximation: 1 token ≈ 4 characters
     max_chars = max_tokens * 4
-    min_chars = min_tokens * 4
     
     # First chunk optimization parameters - FORCE ultra-small for debugging
     first_chunk_max_chars = 60  # Force 60 chars max (15 tokens) regardless of config
-    first_chunk_min_chars = config.first_chunk_min_tokens * 4
     
     logger.debug(f"FORCED first_chunk_max_chars: {first_chunk_max_chars}")
     
@@ -229,7 +231,7 @@ async def simple_smart_split(
                         full_sentence = sentence + punct
                         
                         # Check if adding this sentence exceeds max_chars
-                        if len(current_chunk) + len(full_sentence) > max_chars and len(current_chunk) >= min_chars:
+                        if len(current_chunk) + len(full_sentence) > max_chars:
                             # Yield current chunk and start new one
                             if current_chunk.strip():
                                 yield current_chunk.strip()
@@ -258,7 +260,7 @@ async def simple_smart_split(
             full_sentence = sentence + punct
             
             # Check if adding this sentence exceeds max_chars
-            if len(current_chunk) + len(full_sentence) > max_chars and len(current_chunk) >= min_chars:
+            if len(current_chunk) + len(full_sentence) > max_chars:
                 # Yield current chunk and start new one
                 if current_chunk.strip():
                     yield current_chunk.strip()
@@ -445,9 +447,7 @@ async def health_check():
             "g2p_timeout": config.g2p_timeout,
             "max_batch_size": config.max_batch_size,
             "max_tokens_per_chunk": config.max_tokens_per_chunk,
-            "min_tokens_per_chunk": config.min_tokens_per_chunk,
-            "first_chunk_max_tokens": config.first_chunk_max_tokens,
-            "first_chunk_min_tokens": config.first_chunk_min_tokens
+            "first_chunk_max_tokens": config.first_chunk_max_tokens
         }
     }
     
@@ -820,9 +820,7 @@ async def get_config():
         "g2p_timeout": config.g2p_timeout,
         "max_batch_size": config.max_batch_size,
         "max_tokens_per_chunk": config.max_tokens_per_chunk,
-        "min_tokens_per_chunk": config.min_tokens_per_chunk,
         "first_chunk_max_tokens": config.first_chunk_max_tokens,
-        "first_chunk_min_tokens": config.first_chunk_min_tokens,
         "host": config.host,
         "port": config.port
     }
@@ -862,14 +860,7 @@ if __name__ == "__main__":
     if available_port != config.port:
         logger.warning(f"Port {config.port} is in use, using port {available_port} instead")
     
-    logger.info(f"📡 G2P Service Endpoint: {config.g2p_url}")
-    logger.info(f"📊 Batch Configuration: max_size={config.max_batch_size}")
-    logger.info(f"🔧 Chunk Configuration: {config.min_tokens_per_chunk}-{config.max_tokens_per_chunk} tokens")
-    logger.info(f"⚡ First Chunk Optimization: {config.first_chunk_min_tokens}-{config.first_chunk_max_tokens} tokens")
-    logger.info(f"🌐 Server Address: http://{config.host}:{available_port}")
-    logger.info(f"📚 API Documentation: http://{config.host}:{available_port}/docs")
-    logger.info("=" * 60)
-    
+
     logger.info("Starting uvicorn server...")
     
     # Configure uvicorn to use our logging
