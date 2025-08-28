@@ -57,7 +57,7 @@ async def lifespan(app: FastAPI):
     global pipeline, g2p_session
     try:
         logger.info("Initializing SafePipeline...")
-        pipeline = SafePipeline()
+        pipeline = SafePipeline(cache_dir="./.cache")
         logger.info("✅ SafePipeline initialized successfully")
         
         # Initialize persistent aiohttp session for G2P service (if available)
