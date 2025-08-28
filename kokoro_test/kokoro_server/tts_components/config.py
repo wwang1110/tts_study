@@ -16,8 +16,8 @@ class Config:
 
         # New batching config
         self.dynamic_batching = os.getenv("ENABLE_KOKORO_BATCHING", "true").lower() == "true"
-        self.kokoro_max_batch_size = int(os.getenv("KOKORO_MAX_BATCH_SIZE", "4"))
-        self.kokoro_max_wait_ms = int(os.getenv("KOKORO_MAX_WAIT_MS", "50"))
+        self.kokoro_max_batch_size = int(os.getenv("KOKORO_MAX_BATCH_SIZE", "32"))
+        self.kokoro_max_wait_ms = int(os.getenv("KOKORO_MAX_WAIT_MS", "30"))
         self.kokoro_min_wait_ms = int(os.getenv("KOKORO_MIN_WAIT_MS", "10"))
         self.max_queue_size = int(os.getenv("MAX_QUEUE_SIZE", "1000"))
 
