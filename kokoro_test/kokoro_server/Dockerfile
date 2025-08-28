@@ -6,20 +6,19 @@ FROM python:3.11-slim AS base
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies for audio processing and PyTorch
-RUN apt-get update && apt-get install -y \
-    && rm -rf /var/lib/apt/lists/*
+# Install system dependencies, torch(cpu)
+RUN apt-get update && \
+    rm -rf /var/lib/apt/lists/* && \
+    pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu torch
+
+# Copy cache directory
+COPY ./.cache /app/.cache
+COPY ./kokoro /app/kokoro
+COPY ./tts_service.py /app/tts_service.py
 
 # Copy requirements and install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy the TTS service files
-COPY tts_service.py .
-COPY safe_pipeline.py .
-
-# Create directory for Kokoro models (will be mounted or downloaded)
-RUN mkdir -p /app/models
 
 # Create non-root user for security
 RUN useradd --create-home --shell /bin/bash tts
