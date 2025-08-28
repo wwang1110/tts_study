@@ -45,6 +45,8 @@ class TTSStreamingClientWithPlayback:
         self.audio_queue = []
         self.playback_thread = None
         self.playing = False
+        self.total_chunks_expected = 0
+        self.chunks_played_count = 0
     
     async def __aenter__(self):
         self.session = aiohttp.ClientSession()
@@ -67,11 +69,15 @@ class TTSStreamingClientWithPlayback:
         
         if not self.audio_initialized:
             try:
-                pygame.mixer.pre_init(frequency=22050, size=-16, channels=1, buffer=1024)
+                # Use smaller buffer for lower latency
+                pygame.mixer.pre_init(frequency=22050, size=-16, channels=1, buffer=256)
                 pygame.mixer.init()
+                # Set up multiple channels for seamless playback
+                pygame.mixer.set_num_channels(8)
                 self.audio_initialized = True
                 print("🔊 Audio system initialized with pygame")
                 print(f"   Mixer settings: {pygame.mixer.get_init()}")
+                print(f"   Available channels: {pygame.mixer.get_num_channels()}")
                 return
             except Exception as e:
                 print(f"❌ pygame initialization failed: {e}")
@@ -116,8 +122,11 @@ class TTSStreamingClientWithPlayback:
                 pass
     
     def continuous_playback_worker(self):
-        """Worker thread for continuous audio playback"""
-        while self.playing:
+        """Worker thread for seamless audio playback using Sound objects"""
+        current_channel = 0
+        active_sounds = []
+        
+        while self.playing or self.audio_queue:
             if self.audio_queue:
                 try:
                     audio_data, chunk_number = self.audio_queue.pop(0)
@@ -137,25 +146,46 @@ class TTSStreamingClientWithPlayback:
                         wav_file.setframerate(sample_rate)
                         wav_file.writeframes(audio_data)
                     
-                    # Load and play with pygame
-                    pygame.mixer.music.load(temp_path)
-                    pygame.mixer.music.play()
-                    print(f"🎵 Playing chunk {chunk_number} continuously")
+                    # Load as Sound object for better control
+                    sound = pygame.mixer.Sound(temp_path)
                     
-                    # Wait for this chunk to finish before playing next
-                    while pygame.mixer.music.get_busy() and self.playing:
-                        time.sleep(0.01)
+                    # Wait for previous sound to almost finish to minimize gaps
+                    if active_sounds:
+                        last_sound, last_channel = active_sounds[-1]
+                        # Wait until the last sound is almost done (leave small overlap)
+                        while last_channel.get_busy():
+                            time.sleep(0.001)  # Very short sleep for precise timing
                     
-                    # Clean up
+                    # Play the sound on next available channel
+                    channel = sound.play()
+                    if channel:
+                        active_sounds.append((sound, channel))
+                        print(f"🎵 Playing chunk {chunk_number} seamlessly")
+                        
+                        # Clean up old finished sounds
+                        active_sounds = [(s, c) for s, c in active_sounds if c.get_busy()]
+                    
+                    # Update played count
+                    self.chunks_played_count += 1
+                    
+                    # Clean up temp file
                     try:
                         os.unlink(temp_path)
                     except:
                         pass
                         
                 except Exception as e:
-                    print(f"❌ Continuous playback error: {e}")
+                    print(f"❌ Seamless playback error: {e}")
             else:
-                time.sleep(0.01)  # Small delay when queue is empty
+                time.sleep(0.001)  # Very short delay when queue is empty
+        
+        # Wait for all remaining sounds to finish
+        while active_sounds:
+            active_sounds = [(s, c) for s, c in active_sounds if c.get_busy()]
+            if active_sounds:
+                time.sleep(0.01)
+        
+        print(f"🎵 Seamless playback finished. Played {self.chunks_played_count} chunks.")
     
     def start_continuous_playback(self):
         """Start the continuous playback system"""
@@ -168,7 +198,20 @@ class TTSStreamingClientWithPlayback:
     def add_audio_chunk(self, audio_data: bytes, chunk_number: int):
         """Add audio chunk to the playback queue"""
         self.audio_queue.append((audio_data, chunk_number))
-        print(f"   Added chunk {chunk_number} to playback queue ({len(audio_data)} bytes)")
+        print(f"   Added chunk {chunk_number} to playback queue ({len(audio_data)} bytes, queue size: {len(self.audio_queue)})")
+    
+    def wait_for_playback_completion(self):
+        """Wait for all queued audio to finish playing"""
+        print(f"⏳ Waiting for {len(self.audio_queue)} remaining chunks to play...")
+        
+        # Stop adding new chunks but let existing ones finish
+        self.playing = False
+        
+        # Wait for playback thread to finish processing all chunks
+        if self.playback_thread and self.playback_thread.is_alive():
+            self.playback_thread.join()
+        
+        print(f"✅ All audio chunks have been played!")
     
     async def check_health(self) -> Dict:
         """Check if the TTS service is healthy"""
@@ -292,6 +335,10 @@ class TTSStreamingClientWithPlayback:
                 
         except Exception as e:
             metrics["error"] = str(e)
+        finally:
+            # Ensure all audio finishes playing
+            if hasattr(self, 'playing') and (self.playing or self.audio_queue):
+                self.wait_for_playback_completion()
         
         return metrics
 
@@ -363,9 +410,10 @@ async def run_immediate_playback_test():
                 print(f"   ✅ User hears audio while remaining chunks are still streaming")
                 print(f"   ✅ Significantly improved perceived latency")
                 
-                # Wait a bit for audio to finish playing
-                print(f"\n⏳ Waiting for audio playback to complete...")
-                await asyncio.sleep(5)  # Give time for audio to play
+                # Wait for all audio chunks to finish playing
+                print(f"\n⏳ Ensuring all audio chunks are played...")
+                # The wait_for_playback_completion is called in the finally block of stream_tts_with_immediate_playback
+                await asyncio.sleep(2)  # Brief pause to let the completion message show
                 
             else:
                 print(f"\n❌ Streaming FAILED: {metrics.get('error', 'Unknown error')}")
