@@ -156,8 +156,13 @@ class SingleProcessBatchQueue:
     
     async def _process_batch(self, batch: List[BatchEntry]):
         """Process batch and set results on Futures"""
-        batch_start_time = time.time()
+        processing_start_time = time.time()
         
+        # Log queue wait times
+        for entry in batch:
+            wait_duration_ms = (processing_start_time - entry.arrival_time) * 1000
+            logger.info(f"Request {entry.id} waited in queue for {wait_duration_ms:.2f}ms")
+
         try:
             # Group by voice for efficient processing
             voice_groups = self._group_by_voice(batch)
@@ -167,7 +172,7 @@ class SingleProcessBatchQueue:
                 await self._process_voice_group(voice, entries)
             
             # Update metrics
-            batch_time_ms = (time.time() - batch_start_time) * 1000
+            batch_time_ms = (time.time() - processing_start_time) * 1000
             self._update_metrics(len(batch), batch_time_ms)
             
         except Exception as e:

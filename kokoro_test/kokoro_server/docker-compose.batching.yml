@@ -6,7 +6,7 @@ services:
     image: kokoro-tts-service-batching:latest
     container_name: kokoro-tts-service-batching-${COMPOSE_PROJECT_NAME:-default}
     ports:
-      - "8881:8880" # Use a different host port to avoid conflicts
+      - "8880:8880" # Use a different host port to avoid conflicts
     environment:
       - PYTHONUNBUFFERED=1
       - G2P_SERVICE_URL=http://g2p-service:5000
