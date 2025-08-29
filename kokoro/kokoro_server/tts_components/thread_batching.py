@@ -254,6 +254,7 @@ class QueueGPUWorkerThread:
             # Prepare batch for inference
             phonemes_batch = []
             speeds_batch = []
+            voice_batch = []
             for req in requests:
                 phonemes = req.phonemes
                 if len(phonemes) > 510:
@@ -261,17 +262,16 @@ class QueueGPUWorkerThread:
                     phonemes = phonemes[:510]
                 phonemes_batch.append(phonemes)
                 speeds_batch.append(req.speed)
+                voice_batch.append(req.voice)
 
             # Perform true batch inference
             if self.pipeline is None:
                 raise RuntimeError("Pipeline not initialized")
             
-            # Note: This assumes `from_phonemes` can handle a batch of phonemes and speeds
-            # This might require changes in the SafePipeline implementation
-            audio_batch = self.pipeline.from_phonemes(
-                phonemes=phonemes_batch,
-                voice=voice,
-                speed=speeds_batch
+            audio_batch = self.pipeline.batch_from_phonemes(
+                phoneme_list=phonemes_batch,
+                voice_list=voice_batch,
+                speed_list=speeds_batch
             )
             
             inference_duration_ms = (time.time() - inference_start_time) * 1000

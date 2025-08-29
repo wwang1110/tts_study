@@ -176,21 +176,10 @@ class SafePipeline:
     def batch_from_phonemes(
         self,
         phoneme_list: list[str],
-        voice: Union[str, torch.FloatTensor],
-        speed: float = 1.0
+        voice_list: list[Union[str, torch.FloatTensor]],
+        speed_list: list[float]
     ) -> Generator[torch.FloatTensor, None, None]:
-        """
-        Generate audio from multiple phoneme strings.
-        
-        Args:
-            phoneme_list: List of phoneme strings
-            voice: Voice name or tensor
-            speed: Speech speed multiplier
-            
-        Yields:
-            Audio tensors
-        """
-        for phonemes in phoneme_list:
+        for phonemes, voice, speed in zip(phoneme_list, voice_list, speed_list):
             yield self.from_phonemes(phonemes, voice, speed)
 
 # Convenience functions for backward compatibility
