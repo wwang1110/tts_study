@@ -177,7 +177,7 @@ async def convert_text_to_phonemes(request: G2PRequest):
             # espeak-ng languages (e, f, h, i, p) return (phonemes, graphemes)
             phonemes, _ = g2p(request.text)
         
-        logger.info(f"Converted '{request.text}' ({request.lang} -> {lang_code}) -> '{phonemes}'")
+        logger.debug(f"Converted '{request.text}' ({request.lang} -> {lang_code}) -> '{phonemes}'")
         
         return G2PResponse(
             phonemes=phonemes,

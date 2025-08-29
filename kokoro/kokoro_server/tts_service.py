@@ -463,7 +463,7 @@ async def list_voices():
 async def test_smart_split(request: dict):
     """Test the smart_split functionality"""
     text = request.get("text", "")
-    logger.info(f"Smart split test requested: text_len={len(text)}")
+    logger.debug(f"Smart split test requested: text_len={len(text)}")
     
     if not text:
         logger.error("Smart split test failed: no text provided")
@@ -485,7 +485,7 @@ async def test_smart_split(request: dict):
         "avg_chunk_size": len(text) / len(chunks) if chunks else 0
     }
     
-    logger.info(f"Smart split test completed: {len(chunks)} chunks, avg_size={result['avg_chunk_size']:.1f}")
+    logger.debug(f"Smart split test completed: {len(chunks)} chunks, avg_size={result['avg_chunk_size']:.1f}")
     return result
 
 # Test endpoint for G2P conversion
