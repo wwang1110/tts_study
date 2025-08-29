@@ -401,7 +401,7 @@ async def streaming_tts(request: TTSRequest, client_request: Request):
                     elif batch_queue and config.dynamic_batching:
                         # Subsequent chunks: use batching for efficiency
                         loop = asyncio.get_event_loop()
-                        audio_tensor = await loop.run_in_executor(
+                        audio_tensor, queue_time_ms, inference_time_ms = await loop.run_in_executor(
                             None,
                             batch_queue.submit_for_batching,
                             phonemes,
@@ -457,7 +457,10 @@ async def streaming_tts(request: TTSRequest, client_request: Request):
                     
                     chunk_count += 1
                     processing_method = "direct" if chunk_count == 1 else ("batched" if batch_queue and config.dynamic_batching else "direct")
-                    logger.info(f"Streamed chunk {chunk_count} ({processing_method}): '{text_chunk[:50]}...' -> {len(audio_np)} samples")
+                    if chunk_count > 1 and batch_queue and config.dynamic_batching:
+                        logger.info(f"Streamed chunk {chunk_count} ({processing_method}): '{text_chunk[:50]}...' -> {len(audio_np)} samples, queue_time={queue_time_ms:.2f}ms, inference_time={inference_time_ms:.2f}ms")
+                    else:
+                        logger.info(f"Streamed chunk {chunk_count} ({processing_method}): '{text_chunk[:50]}...' -> {len(audio_np)} samples")
                     
                 except Exception as e:
                     # Log error but continue with next chunk
@@ -470,7 +473,7 @@ async def streaming_tts(request: TTSRequest, client_request: Request):
             error_msg = f"Streaming error: {str(e)}"
             yield error_msg.encode()
         finally:
-            logger.info(f"Streaming completed: {chunk_count} chunks processed, {total_bytes_streamed} total bytes streamed")
+            logger.info(f"Streaming completed: {chunk_count} chunks processed, {total_bytes_streamed} total bytes streamed.")
     
     media_type = "audio/wav" if request.format.lower() == "wav" else "audio/pcm"
     

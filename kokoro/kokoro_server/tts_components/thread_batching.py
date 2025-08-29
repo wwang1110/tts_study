@@ -26,6 +26,8 @@ class BatchRequest:
     result: Optional[torch.Tensor] = None
     error: Optional[Exception] = None
     arrival_time: float = field(default_factory=time.time)
+    queue_duration_ms: float = 0.0
+    inference_duration_ms: float = 0.0
     
     def phoneme_length(self) -> int:
         return len(self.phonemes)
@@ -102,7 +104,7 @@ class QueueGPUWorkerThread:
             self.worker_thread.join(timeout=5.0)
         logger.info("QueueGPUWorkerThread stopped")
     
-    def submit_for_batching(self, phonemes: str, voice: str, speed: float = 1.0) -> torch.Tensor:
+    def submit_for_batching(self, phonemes: str, voice: str, speed: float = 1.0) -> tuple[torch.Tensor, float, float]:
         """
         Submit a request for batching (called by HTTP threads)
         Returns the result after processing
@@ -137,7 +139,7 @@ class QueueGPUWorkerThread:
         if request.result is None:
             raise RuntimeError("Request processing failed - no result")
         
-        return request.result
+        return request.result, request.queue_duration_ms, request.inference_duration_ms
     
     def _worker_loop(self):
         """
@@ -210,8 +212,8 @@ class QueueGPUWorkerThread:
         
         # Log queue wait times
         for request in batch:
-            wait_duration_ms = (processing_start_time - request.arrival_time) * 1000
-            logger.debug(f"Request {request.id} waited in queue for {wait_duration_ms:.2f}ms")
+            request.queue_duration_ms = (processing_start_time - request.arrival_time) * 1000
+            logger.debug(f"Request {request.id} waited in queue for {request.queue_duration_ms:.2f}ms")
 
         try:
             # Group by voice for efficient processing
@@ -245,38 +247,53 @@ class QueueGPUWorkerThread:
         return voice_groups
 
     def _process_voice_group(self, voice: str, requests: List[BatchRequest]):
-        """Process requests with the same voice using GPU/CPU"""
+        """Process requests with the same voice using GPU/CPU with true batching"""
         try:
-            # Process each request in the voice group
-            for request in requests:
+            inference_start_time = time.time()
+            
+            # Prepare batch for inference
+            phonemes_batch = []
+            speeds_batch = []
+            for req in requests:
+                phonemes = req.phonemes
+                if len(phonemes) > 510:
+                    logger.warning(f"Phonemes too long ({len(phonemes)}), truncating")
+                    phonemes = phonemes[:510]
+                phonemes_batch.append(phonemes)
+                speeds_batch.append(req.speed)
+
+            # Perform true batch inference
+            if self.pipeline is None:
+                raise RuntimeError("Pipeline not initialized")
+            
+            # Note: This assumes `from_phonemes` can handle a batch of phonemes and speeds
+            # This might require changes in the SafePipeline implementation
+            audio_batch = self.pipeline.from_phonemes(
+                phonemes=phonemes_batch,
+                voice=voice,
+                speed=speeds_batch
+            )
+            
+            inference_duration_ms = (time.time() - inference_start_time) * 1000
+            
+            # Distribute results back to individual requests
+            for i, request in enumerate(requests):
                 try:
-                    # Validate phoneme length (Kokoro limit)
-                    phonemes = request.phonemes
-                    if len(phonemes) > 510:
-                        logger.warning(f"Phonemes too long ({len(phonemes)}), truncating")
-                        phonemes = phonemes[:510]
-                    
-                    # Generate audio using SafePipeline with device handling
-                    if self.pipeline is None:
-                        raise RuntimeError("Pipeline not initialized")
-                    audio = self.pipeline.from_phonemes(phonemes, voice, request.speed)
-                    
-                    # Ensure result is on CPU for serialization if needed
+                    audio = audio_batch[i]
                     if hasattr(audio, 'cpu') and self.device != 'cpu':
                         audio = audio.cpu()
                     
                     request.result = audio
-                    request.result_event.set()
+                    request.inference_duration_ms = inference_duration_ms / len(requests) # Average time
                     
                 except Exception as e:
-                    logger.error(f"Inference failed for request {request.id}: {e}")
-                    # Return silence as fallback (1 second at 24kHz)
-                    silence = torch.zeros(24000, dtype=torch.float32)
-                    request.result = silence
+                    logger.error(f"Failed to assign result for request {request.id}: {e}")
+                    request.result = torch.zeros(24000, dtype=torch.float32) # Fallback silence
+                finally:
                     request.result_event.set()
-                    
+
         except Exception as e:
-            logger.error(f"Voice group processing failed for {voice}: {e}")
+            logger.error(f"Batch inference failed for voice group {voice}: {e}")
             # Set exception on all requests in this group
             for request in requests:
                 if not request.result_event.is_set():
@@ -347,7 +364,7 @@ class ThreadBatchingHelper:
             self.worker_thread.stop()
             logger.info("ThreadBatchingHelper stopped")
     
-    def submit_for_batching(self, phonemes: str, voice: str, speed: float = 1.0) -> torch.Tensor:
+    def submit_for_batching(self, phonemes: str, voice: str, speed: float = 1.0) -> tuple[torch.Tensor, float, float]:
         """
         Submit request for batching (called by HTTP threads)
         This is the main entry point from FastAPI handlers
