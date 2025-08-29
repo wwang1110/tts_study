@@ -48,13 +48,6 @@ logger.info(f"📦 Max Batch Size: {config.max_batch_size}")
 logger.info(f"🧩 Max Tokens Per Chunk: {config.max_tokens_per_chunk}")
 logger.info(f"⚡ First Chunk Max Tokens: {config.first_chunk_max_tokens}")
 logger.info(f"🌐 Server Address: http://{config.host}:{config.port}")
-logger.info(f"  DYNAMIC_BATCHING: {config.dynamic_batching}")
-logger.info(f"  KOKORO_MAX_BATCH_SIZE: {config.kokoro_max_batch_size}")
-logger.info(f"  NORMAL_QUEUE_MAX_WAIT_MS: {config.normal_queue_max_wait_ms}")
-logger.info(f"  NORMAL_QUEUE_MIN_WAIT_MS: {config.normal_queue_min_wait_ms}")
-logger.info(f"  HIGH_PRIORITY_QUEUE_MAX_WAIT_MS: {config.high_priority_queue_max_wait_ms}")
-logger.info(f"  HIGH_PRIORITY_QUEUE_MIN_WAIT_MS: {config.high_priority_queue_min_wait_ms}")
-logger.info(f"  MAX_QUEUE_SIZE: {config.max_queue_size}")
 logger.info("=" * 60)
 
 pipeline = None

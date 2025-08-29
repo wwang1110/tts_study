@@ -273,6 +273,7 @@ class QueueGPUWorkerThread:
                 voice_list=voice_batch,
                 speed_list=speeds_batch
             )
+            audio_batch = list(audio_batch)
             
             inference_duration_ms = (time.time() - inference_start_time) * 1000
             
