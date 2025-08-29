@@ -14,17 +14,10 @@ class Config:
         self.host = os.getenv("HOST", "0.0.0.0")
         self.port = int(os.getenv("PORT", "8880"))
 
-        # Dynamic Batching Configuration
+        # New batching config
         self.dynamic_batching = os.getenv("ENABLE_KOKORO_BATCHING", "true").lower() == "true"
-        self.kokoro_max_batch_size = int(os.getenv("KOKORO_MAX_BATCH_SIZE", "4"))
-        
-        # Normal Priority Queue
-        self.normal_queue_max_wait_ms = int(os.getenv("NORMAL_QUEUE_MAX_WAIT_MS", "100"))
-        self.normal_queue_min_wait_ms = int(os.getenv("NORMAL_QUEUE_MIN_WAIT_MS", "30"))
-        
-        # High Priority Queue (for first streaming chunk)
-        self.high_priority_queue_max_wait_ms = int(os.getenv("HIGH_PRIORITY_QUEUE_MAX_WAIT_MS", "20"))
-        self.high_priority_queue_min_wait_ms = int(os.getenv("HIGH_PRIORITY_QUEUE_MIN_WAIT_MS", "10"))
-        
+        self.kokoro_max_batch_size = int(os.getenv("KOKORO_MAX_BATCH_SIZE", "32"))
+        self.kokoro_max_wait_ms = int(os.getenv("KOKORO_MAX_WAIT_MS", "30"))
+        self.kokoro_min_wait_ms = int(os.getenv("KOKORO_MIN_WAIT_MS", "10"))
         self.max_queue_size = int(os.getenv("MAX_QUEUE_SIZE", "1000"))
 
