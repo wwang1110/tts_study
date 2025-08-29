@@ -29,7 +29,6 @@ from tts_components import (
     Config,
     TTSRequest,
     BatchTTSRequest,
-    StreamingTTSRequest,
     simple_smart_split,
     audio_to_wav_bytes,
     audio_to_pcm_bytes,
@@ -57,7 +56,6 @@ logger.info(f"  HIGH_PRIORITY_QUEUE_MAX_WAIT_MS: {config.high_priority_queue_max
 logger.info(f"  HIGH_PRIORITY_QUEUE_MIN_WAIT_MS: {config.high_priority_queue_min_wait_ms}")
 logger.info(f"  MAX_QUEUE_SIZE: {config.max_queue_size}")
 logger.info("=" * 60)
-logger.info("✅ SafePipeline initialized successfully")
 
 pipeline = None
 # Global aiohttp session for connection pooling
@@ -292,7 +290,7 @@ async def batch_tts(batch_request: BatchTTSRequest):
 
 # Mode 3: Streaming TTS with smart_split and G2P
 @app.post("/tts/stream")
-async def streaming_tts(request: StreamingTTSRequest, client_request: Request):
+async def streaming_tts(request: TTSRequest, client_request: Request):
     """Streaming text-to-speech conversion using G2P service and phonemes"""
     logger.info(f"Streaming TTS request: text_len={len(request.text)}, voice={request.voice}, lang={request.language}, format={request.format}")
     

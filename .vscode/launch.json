@@ -17,7 +17,7 @@
             "request": "launch",
             "program": "${file}",
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/kokoro_test/kokoro_server"
+            "cwd": "${workspaceFolder}/kokoro/kokoro_server"
         }
     ]
 }

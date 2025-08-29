@@ -25,19 +25,18 @@ logger = logging.getLogger(__name__)
 
 # Import our license-safe pipeline
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from kokoro import SafePipeline
+from kokoro.safe_pipeline import SafePipeline
 from tts_components import (
     Config,
     TTSRequest,
     BatchTTSRequest,
-    StreamingTTSRequest,
+    ThreadBatchingHelper,
     simple_smart_split,
     audio_to_wav_bytes,
     audio_to_pcm_bytes,
     create_wav_header,
     text_to_phonemes,
 )
-from tts_components.dynamic_batching import SingleProcessBatchQueue
 
 # Global configuration and pipeline
 config = Config()
@@ -59,12 +58,11 @@ logger.info(f"  HIGH_PRIORITY_QUEUE_MAX_WAIT_MS: {config.high_priority_queue_max
 logger.info(f"  HIGH_PRIORITY_QUEUE_MIN_WAIT_MS: {config.high_priority_queue_min_wait_ms}")
 logger.info(f"  MAX_QUEUE_SIZE: {config.max_queue_size}")
 logger.info("=" * 60)
-logger.info("✅ SafePipeline initialized successfully")
 
 pipeline = None
 # Global aiohttp session for connection pooling
 g2p_session = None
-batch_queue: Optional[SingleProcessBatchQueue] = None
+batch_queue: Optional[ThreadBatchingHelper] = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -87,7 +85,7 @@ async def lifespan(app: FastAPI):
 
         # Initialize batching if enabled
         if config.dynamic_batching:
-            batch_queue = SingleProcessBatchQueue(
+            batch_queue = ThreadBatchingHelper(
                 max_batch_size=config.kokoro_max_batch_size,
                 normal_queue_max_wait_ms=config.normal_queue_max_wait_ms,
                 normal_queue_min_wait_ms=config.normal_queue_min_wait_ms,
@@ -96,7 +94,7 @@ async def lifespan(app: FastAPI):
                 max_queue_size=config.max_queue_size
             )
             batch_queue.set_pipeline(pipeline)
-            await batch_queue.start_worker()
+            batch_queue.start()
             logger.info("✅ Dynamic batching enabled")
         else:
             logger.info("ℹ️ Dynamic batching disabled")
@@ -112,7 +110,7 @@ async def lifespan(app: FastAPI):
         await g2p_session.close()
         logger.info("G2P session pool closed")
     if batch_queue:
-        await batch_queue.stop_worker()
+        batch_queue.stop()
         logger.info("✅ Batch queue stopped")
     logger.info("TTS service shutting down...")
 
@@ -179,11 +177,14 @@ async def single_tts(request: TTSRequest):
         
         # Step 2: Submit to batch queue or process directly
         if batch_queue and config.dynamic_batching:
-            # Use dynamic batching
-            audio_tensor = await batch_queue.submit_for_batching(
-                phonemes=phonemes,
-                voice=request.voice,
-                speed=request.speed
+            # Use two-thread optimized dynamic batching (run in thread pool to avoid blocking)
+            loop = asyncio.get_event_loop()
+            audio_tensor = await loop.run_in_executor(
+                None,
+                batch_queue.submit_for_batching,
+                phonemes,
+                request.voice,
+                request.speed
             )
         else:
             # Direct processing (fallback)
@@ -244,7 +245,8 @@ async def batch_tts(batch_request: BatchTTSRequest):
         
         # Step 2: Submit all to batch queue or process directly
         if batch_queue and config.dynamic_batching:
-            # Use dynamic batching
+            # Use two-thread optimized dynamic batching
+            loop = asyncio.get_event_loop()
             kokoro_tasks = []
             valid_requests = []
             for i, (req, phonemes_result) in enumerate(zip(batch_request.requests, phonemes_list)):
@@ -252,11 +254,17 @@ async def batch_tts(batch_request: BatchTTSRequest):
                     logger.error(f"G2P failed for batch item {i}: {phonemes_result}")
                     continue # Skip failed G2P requests
                 
+                if not isinstance(phonemes_result, str):
+                    logger.error(f"Invalid phonemes result type for batch item {i}: {type(phonemes_result)}")
+                    continue
+                
                 valid_requests.append((req, phonemes_result))
-                task = batch_queue.submit_for_batching(
-                    phonemes=phonemes_result,
-                    voice=req.voice,
-                    speed=req.speed
+                task = loop.run_in_executor(
+                    None,
+                    batch_queue.submit_for_batching,
+                    phonemes_result,
+                    req.voice,
+                    req.speed
                 )
                 kokoro_tasks.append(task)
             
@@ -271,11 +279,17 @@ async def batch_tts(batch_request: BatchTTSRequest):
             # Direct processing
             results_dict = {}
             for req, phonemes_result in zip(batch_request.requests, phonemes_list):
-                 if isinstance(phonemes_result, Exception):
-                    results_dict[req.text] = phonemes_result
-                    continue
-                 audio = pipeline.from_phonemes(phonemes_result, req.voice, req.speed)
-                 results_dict[req.text] = audio
+                if isinstance(phonemes_result, Exception):
+                   results_dict[req.text] = phonemes_result
+                   continue
+                if pipeline is None:
+                   results_dict[req.text] = Exception("Pipeline not ready")
+                   continue
+                if not isinstance(phonemes_result, str):
+                   results_dict[req.text] = Exception(f"Invalid phonemes type: {type(phonemes_result)}")
+                   continue
+                audio = pipeline.from_phonemes(phonemes_result, req.voice, req.speed)
+                results_dict[req.text] = audio
         
         # Step 3: Create ZIP response
         zip_buffer = io.BytesIO()
@@ -316,15 +330,17 @@ async def batch_tts(batch_request: BatchTTSRequest):
 
 # Mode 3: Streaming TTS with smart_split and G2P
 @app.post("/tts/stream")
-async def streaming_tts(request: StreamingTTSRequest, client_request: Request):
+async def streaming_tts(request: TTSRequest, client_request: Request):
     """Streaming text-to-speech conversion with chunk-level batching"""
     if not pipeline:
         raise HTTPException(status_code=503, detail="TTS pipeline not ready")
     
     async def generate_audio_stream():
+        chunk_count = 0
+        total_bytes_streamed = 0
+        wav_header_sent = False
+        
         try:
-            chunk_count = 0
-            
             # Use smart_split to break text into optimal chunks
             async for text_chunk in simple_smart_split(
                 request.text,
@@ -341,8 +357,13 @@ async def streaming_tts(request: StreamingTTSRequest, client_request: Request):
                     silence_samples = int(pause_duration * 24000)
                     silence_audio = np.zeros(silence_samples, dtype=np.int16)
                     
+                    # Stream silence immediately
                     if request.format.lower() == "wav":
-                        # This is tricky for streaming; for now, we send raw PCM for silence
+                        if not wav_header_sent:
+                            # Send WAV header first (we'll update size later)
+                            wav_header = create_wav_header(0)  # Placeholder size
+                            yield wav_header
+                            wav_header_sent = True
                         silence_bytes = silence_audio.tobytes()
                     else:
                         silence_bytes = silence_audio.tobytes()
@@ -352,7 +373,9 @@ async def streaming_tts(request: StreamingTTSRequest, client_request: Request):
                     for i in range(0, len(silence_bytes), chunk_size):
                         if await client_request.is_disconnected():
                             return
-                        yield silence_bytes[i:i + chunk_size]
+                        chunk = silence_bytes[i:i + chunk_size]
+                        yield chunk
+                        total_bytes_streamed += len(chunk)
                         await asyncio.sleep(0.01)
                     
                     continue
@@ -369,51 +392,97 @@ async def streaming_tts(request: StreamingTTSRequest, client_request: Request):
                     )
                     
                     # Submit to batch queue or process directly
+<<<<<<< HEAD:kokoro_test/kokoro_server/tts_service_dynamic_batching.py
                     if batch_queue and config.dynamic_batching:
                         # First chunk of a stream is high priority
                         is_first_chunk = chunk_count == 0
                         audio_tensor = await batch_queue.submit_for_batching(
+=======
+                    # For streaming: bypass batching for first chunk to reduce latency
+                    if chunk_count == 0:
+                        # First chunk: invoke model directly for fastest response
+                        if pipeline is None:
+                            raise Exception("Pipeline not ready")
+                        audio_tensor = pipeline.from_phonemes(
+>>>>>>> d789ff18141eb64752ec111b60f2f14ff2164fb0:kokoro/kokoro_server/tts_service_batch.py
                             phonemes=phonemes,
                             voice=request.voice,
                             speed=request.speed,
                             high_priority=is_first_chunk
                         )
+                    elif batch_queue and config.dynamic_batching:
+                        # Subsequent chunks: use batching for efficiency
+                        loop = asyncio.get_event_loop()
+                        audio_tensor = await loop.run_in_executor(
+                            None,
+                            batch_queue.submit_for_batching,
+                            phonemes,
+                            request.voice,
+                            request.speed
+                        )
                     else:
+                        # Fallback: direct processing
+                        if pipeline is None:
+                            raise Exception("Pipeline not ready")
                         audio_tensor = pipeline.from_phonemes(
                             phonemes=phonemes,
                             voice=request.voice,
                             speed=request.speed
                         )
                     
-                    # Convert to bytes
-                    if request.format.lower() == "wav":
-                        # For streaming WAV, we can't know the final size for the header.
-                        # A common approach is to send raw PCM and let the client handle it,
-                        # or use a library that can patch the header later.
-                        # For simplicity, we'll stream raw PCM and the client can reconstruct the WAV.
-                        audio_bytes = audio_to_pcm_bytes(audio_tensor)
+                    # Convert to numpy immediately
+                    if hasattr(audio_tensor, 'numpy'):
+                        audio_np = audio_tensor.numpy()
                     else:
-                        audio_bytes = audio_to_pcm_bytes(audio_tensor)
+                        audio_np = np.array(audio_tensor)
                     
-                    # Stream audio in chunks
-                    chunk_size = 1024
-                    for i in range(0, len(audio_bytes), chunk_size):
+                    # Ensure int16 format
+                    if audio_np.dtype != np.int16:
+                        if audio_np.dtype == np.float32:
+                            audio_np = (audio_np * 32767).astype(np.int16)
+                        else:
+                            audio_np = audio_np.astype(np.int16)
+                    
+                    # Stream this chunk immediately
+                    if request.format.lower() == "wav":
+                        if not wav_header_sent:
+                            # Send WAV header first (we'll update size later)
+                            wav_header = create_wav_header(0)  # Placeholder size
+                            yield wav_header
+                            wav_header_sent = True
+                        chunk_bytes = audio_np.tobytes()
+                    else:
+                        chunk_bytes = audio_np.tobytes()
+                    
+                    # Stream audio chunk in 1024-byte pieces
+                    stream_chunk_size = 1024
+                    for i in range(0, len(chunk_bytes), stream_chunk_size):
                         if await client_request.is_disconnected():
                             return
                         
-                        chunk = audio_bytes[i:i + chunk_size]
-                        yield chunk
-                        await asyncio.sleep(0.001) # smaller delay for faster streaming
+                        stream_chunk = chunk_bytes[i:i + stream_chunk_size]
+                        yield stream_chunk
+                        total_bytes_streamed += len(stream_chunk)
+                        
+                        # Minimal delay for maximum streaming speed
+                        await asyncio.sleep(0.0001)  # Further reduced for ultra-fast streaming
                     
                     chunk_count += 1
+                    processing_method = "direct" if chunk_count == 1 else ("batched" if batch_queue and config.dynamic_batching else "direct")
+                    logger.info(f"Streamed chunk {chunk_count} ({processing_method}): '{text_chunk[:50]}...' -> {len(audio_np)} samples")
                     
                 except Exception as e:
+                    # Log error but continue with next chunk
                     logger.error(f"Error processing chunk {chunk_count}: {e}")
                     continue
-                
+            
         except Exception as e:
+            # Send error as final chunk
+            logger.error(f"Streaming generation error: {str(e)}")
             error_msg = f"Streaming error: {str(e)}"
             yield error_msg.encode()
+        finally:
+            logger.info(f"Streaming completed: {chunk_count} chunks processed, {total_bytes_streamed} total bytes streamed")
     
     media_type = "audio/wav" if request.format.lower() == "wav" else "audio/pcm"
     

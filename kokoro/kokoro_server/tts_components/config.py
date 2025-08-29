@@ -6,7 +6,7 @@ class Config:
         import logging
         logger = logging.getLogger(__name__)
 
-        self.g2p_url = os.getenv("G2P_SERVICE_URL", "http://localhost:8889")
+        self.g2p_url = os.getenv("G2P_SERVICE_URL", "http://localhost:5000")
         self.g2p_timeout = int(os.getenv("G2P_TIMEOUT", "5"))
         self.max_batch_size = int(os.getenv("MAX_BATCH_SIZE", "32"))
         self.max_tokens_per_chunk = int(os.getenv("MAX_TOKENS_PER_CHUNK", "100"))

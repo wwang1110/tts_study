@@ -2,9 +2,9 @@ services:
   tts-service-batching:
     build:
       context: .
-      dockerfile: Dockerfile.batching
-    image: kokoro-tts-service-batching:latest
-    container_name: kokoro-tts-service-batching-${COMPOSE_PROJECT_NAME:-default}
+      dockerfile: Dockerfile.batch
+    image: kokoro-tts-service-batch:latest
+    container_name: kokoro-tts-service-batch-${COMPOSE_PROJECT_NAME:-default}
     ports:
       - "8880:8880" # Use a different host port to avoid conflicts
     environment:
@@ -19,11 +19,17 @@ services:
       # Dynamic Batching Configuration
       - ENABLE_KOKORO_BATCHING=true
       - KOKORO_MAX_BATCH_SIZE=32
+<<<<<<< HEAD:kokoro_test/kokoro_server/docker-compose.batching.yml
       - NORMAL_QUEUE_MAX_WAIT_MS=100
       - NORMAL_QUEUE_MIN_WAIT_MS=30
       - HIGH_PRIORITY_QUEUE_MAX_WAIT_MS=20
       - HIGH_PRIORITY_QUEUE_MIN_WAIT_MS=10
       - MAX_QUEUE_SIZE=1000
+=======
+      - KOKORO_MAX_WAIT_MS=30
+      - KOKORO_MIN_WAIT_MS=10
+      - MAX_QUEUE_SIZE=512
+>>>>>>> d789ff18141eb64752ec111b60f2f14ff2164fb0:kokoro/kokoro_server/docker-compose.batch.yml
     volumes:
       # Mount Kokoro models directory (adjust path as needed)
       - ./models:/app/models:ro
@@ -52,6 +58,9 @@ services:
 
   # G2P service dependency (can be external or included)
   g2p-service:
+    build:
+      context: ../kokoro_g2p_service
+      dockerfile: Dockerfile
     image: kokoro-g2p-service:latest
     container_name: kokoro-g2p-service-${COMPOSE_PROJECT_NAME:-default}
     ports:
