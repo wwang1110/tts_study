@@ -19,17 +19,9 @@ services:
       # Dynamic Batching Configuration
       - ENABLE_KOKORO_BATCHING=true
       - KOKORO_MAX_BATCH_SIZE=32
-<<<<<<< HEAD:kokoro_test/kokoro_server/docker-compose.batching.yml
-      - NORMAL_QUEUE_MAX_WAIT_MS=100
-      - NORMAL_QUEUE_MIN_WAIT_MS=30
-      - HIGH_PRIORITY_QUEUE_MAX_WAIT_MS=20
-      - HIGH_PRIORITY_QUEUE_MIN_WAIT_MS=10
-      - MAX_QUEUE_SIZE=1000
-=======
       - KOKORO_MAX_WAIT_MS=30
       - KOKORO_MIN_WAIT_MS=10
       - MAX_QUEUE_SIZE=512
->>>>>>> d789ff18141eb64752ec111b60f2f14ff2164fb0:kokoro/kokoro_server/docker-compose.batch.yml
     volumes:
       # Mount Kokoro models directory (adjust path as needed)
       - ./models:/app/models:ro
