@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # Import our license-safe pipeline
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from kokoro import SafePipeline
+from kokoro.safe_pipeline import SafePipeline
 from tts_components import (
     Config,
     TTSRequest,
