@@ -16,11 +16,11 @@ services:
       - FIRST_CHUNK_MAX_TOKENS=15
       - HOST=0.0.0.0
       - PORT=8880
-    volumes:
+    # volumes:
       # Mount Kokoro models directory (adjust path as needed)
-      - ./models:/app/models:ro
+      # - ./models:/app/models:ro
       # Optional: Mount output directory for generated audio
-      - ./output:/app/output
+      # - ./output:/app/output
     restart: unless-stopped
     deploy:
       resources:

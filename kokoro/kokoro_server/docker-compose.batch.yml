@@ -22,11 +22,11 @@ services:
       - KOKORO_MAX_WAIT_MS=30
       - KOKORO_MIN_WAIT_MS=10
       - MAX_QUEUE_SIZE=512
-    volumes:
+    # volumes:
       # Mount Kokoro models directory (adjust path as needed)
-      - ./models:/app/models:ro
+      # - ./models:/app/models:ro
       # Optional: Mount output directory for generated audio
-      - ./output:/app/output
+      # - ./output:/app/output
     restart: unless-stopped
     deploy:
       resources:
