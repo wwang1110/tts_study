@@ -111,14 +111,20 @@ class KModel(torch.nn.Module):
 
     def forward(
         self,
-        phonemes: str,
-        ref_s: torch.FloatTensor,
-        speed: float = 1,
+        phonemes: list[str],
+        ref_s: list[torch.FloatTensor],
+        speeds: list[float],
         return_output: bool = False
     ) -> Union['KModel.Output', torch.FloatTensor]:
-        input_ids = list(filter(lambda i: i is not None, map(lambda p: self.vocab.get(p), phonemes)))
-        logger.debug(f"phonemes: {phonemes} -> input_ids: {input_ids}")
-        assert len(input_ids)+2 <= self.context_length, (len(input_ids)+2, self.context_length)
+
+        input_ids = [list(filter(lambda i: i is not None, map(lambda p: self.vocab.get(p), ph))) for ph in phonemes]
+        logger.debug(f"phonemes: {phonemes[0]} -> input_ids: {input_ids[0]}")
+        assert len(input_ids[0])+2 <= self.context_length, (len(input_ids[0])+2, self.context_length)
+
+        input_ids = input_ids[0]
+        ref_s = ref_s[0]
+        speed = speeds[0]
+
         input_ids = torch.LongTensor([[0, *input_ids, 0]]).to(self.device)
         ref_s = ref_s.to(self.device)
         audio, pred_dur = self.forward_with_tokens(input_ids, ref_s, speed)

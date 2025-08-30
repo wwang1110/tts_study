@@ -23,21 +23,37 @@ async def main():
 
     pipeline = SafePipeline(cache_dir="./.cache")
     
-    text = '''
-[Kokoro](/kˈOkəɹO/) is an open-weight TTS model with 82 million parameters. Despite its lightweight architecture, it delivers comparable quality to larger models while being significantly faster and more cost-efficient. With Apache-licensed weights, [Kokoro](/kˈOkəɹO/) can be deployed anywhere from production environments to personal projects.
-'''
+    texts = [
+        "[Kokoro](/kˈOkəɹO/) is an open-weight TTS model with 82 million parameters. Despite its lightweight architecture, it delivers comparable quality to larger models while being significantly faster and more cost-efficient. With Apache-licensed weights, [Kokoro](/kˈOkəɹO/) can be deployed anywhere from production environments to personal projects.",
+        "Hello, world!"
+    ]
+
+    voices = [
+        "af_heart",
+        "am_adam"
+    ]
+
+    speeds = [
+        1.0,
+        1.0
+    ]
     
-    # Convert text to phonemes using G2P service
-    logger.info(f"Converting text to phonemes: '{text[:50]}...'")
-    
-    # For demo purposes, use synchronous fallback (no aiohttp session)
-    phonemes = await text_to_phonemes(
-        text,
+    phonemes = []
+    phonemes.append(await text_to_phonemes(
+        texts[0],
         "a",  # Default to English
         g2p_session,
         config.g2p_url,
         config.g2p_timeout
-    )
+    ))
+    phonemes.append(await text_to_phonemes(
+        texts[1],
+        "a",  # Default to English
+        g2p_session,
+        config.g2p_url,
+        config.g2p_timeout
+    ))
+
     logger.info(f"G2P conversion successful: {len(phonemes)} phonemes")
     
     # Generate audio using the pipeline
@@ -47,8 +63,8 @@ async def main():
     logger.debug(f"Generating audio from phonemes using voice=af_heart, speed=1.0")
     audio_tensor = pipeline.from_phonemes(
         phonemes=phonemes,
-        voice="af_heart",
-        speed=1.0
+        voices=voices,
+        speeds=speeds
     )
     
     logger.debug(f"Audio generation successful: {len(audio_tensor)} samples")

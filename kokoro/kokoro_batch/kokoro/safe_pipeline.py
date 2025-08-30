@@ -99,116 +99,19 @@ class SafePipeline:
     
     def from_phonemes(
         self, 
-        phonemes: str, 
-        voice: Union[str, torch.FloatTensor],
-        speed: float = 1.0
+        phonemes: list[str], 
+        voices: list[str],
+        speeds: list[float]
     ) -> torch.FloatTensor:
-        """
-        Generate audio directly from phonemes (no GPL dependencies).
-        
-        Args:
-            phonemes: Phoneme string (e.g., "həˈloʊ wɜrld")
-            voice: Voice name or tensor
-            speed: Speech speed multiplier
-            
-        Returns:
-            Audio tensor
-        """
         if len(phonemes) > 510:
             raise ValueError(f'Phoneme string too long: {len(phonemes)} > 510')
-        
-        voice_pack = self.voices[voice].to(self.model.device)
-        
+
+        voice_packs = [self.voices[voice].to(self.model.device) for voice in voices]
+
         # Use the model directly with phonemes
         # The voice pack needs to be indexed by phoneme length - 1
-        voice_tensor = voice_pack[len(phonemes)-1]
-        output = self.model(phonemes, voice_tensor, speed, return_output=True)
+        voice_tensor = []
+        for v, p in zip(voice_packs, phonemes):
+            voice_tensor.append(v[len(p)-1])
+        output = self.model(phonemes, voice_tensor, speeds, return_output=True)
         return output.audio
-    
-    def from_text(
-        self,
-        text: str,
-        voice: Union[str, torch.FloatTensor],
-        lang: str = "en-US",
-        g2p_url: str = "http://0.0.0.0:5000",
-        speed: float = 1.0
-    ) -> torch.FloatTensor:
-        """
-        Generate audio from text using external G2P service.
-        
-        Args:
-            text: Input text
-            voice: Voice name or tensor
-            lang: Language code (en-US, en-GB, pt-BR, fr-FR, es, hi, it, ja, zh)
-            g2p_url: URL of G2P service
-            speed: Speech speed multiplier
-            
-        Returns:
-            Audio tensor
-            
-        Raises:
-            ImportError: If requests is not available
-            RuntimeError: If G2P service is unavailable
-        """
-        try:
-            import requests
-        except ImportError:
-            raise ImportError("requests library required for G2P service. Install with: pip install requests")
-        
-        try:
-            response = requests.post(
-                f"{g2p_url}/convert",
-                json={"text": text, "lang": lang},
-                timeout=30
-            )
-            response.raise_for_status()
-            
-            data = response.json()
-            if 'error' in data:
-                raise RuntimeError(f"G2P service error: {data['error']}")
-            
-            phonemes = data['phonemes']
-            return self.from_phonemes(phonemes, voice, speed)
-            
-        except requests.RequestException as e:
-            raise RuntimeError(f"G2P service unavailable: {e}")
-    
-    def batch_from_phonemes(
-        self,
-        phoneme_list: list[str],
-        voice_list: list[Union[str, torch.FloatTensor]],
-        speed_list: list[float]
-    ) -> Generator[torch.FloatTensor, None, None]:
-        for phonemes, voice, speed in zip(phoneme_list, voice_list, speed_list):
-            yield self.from_phonemes(phonemes, voice, speed)
-
-# Convenience functions for backward compatibility
-def create_safe_pipeline(
-    repo_id: str = 'hexgrad/Kokoro-82M',
-    device: Optional[str] = None
-) -> SafePipeline:
-    """Create a license-safe pipeline instance."""
-    return SafePipeline(repo_id=repo_id, device=device)
-
-def phonemes_to_audio(
-    phonemes: str,
-    voice: Union[str, torch.FloatTensor],
-    repo_id: str = 'hexgrad/Kokoro-82M',
-    device: Optional[str] = None,
-    speed: float = 1.0
-) -> torch.FloatTensor:
-    """
-    Simple function to convert phonemes to audio.
-    
-    Args:
-        phonemes: Phoneme string
-        voice: Voice name or tensor
-        repo_id: Model repository
-        device: Device to use
-        speed: Speech speed
-        
-    Returns:
-        Audio tensor
-    """
-    pipeline = SafePipeline(repo_id=repo_id, device=device)
-    return pipeline.from_phonemes(phonemes, voice, speed)
