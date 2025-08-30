@@ -2,7 +2,7 @@ from dia.model import Dia
 
 
 #model = Dia.from_pretrained(model_name="nari-labs/Dia-1.6B-0626", compute_dtype="float16", cache_dir="./.cache")
-model = Dia.from_pretrained(model_name="nari-labs/Dia-1.6B-0626", compute_dtype="float16")
+model = Dia.from_pretrained(model_name="nari-labs/Dia-1.6B-0626", compute_dtype="float16", device="cuda")
 
 text = "[S1] Dia is an open weights text to dialogue model. [S2] You get full control over scripts and voices. [S1] Wow. Amazing. (laughs) [S2] Try it now on Git hub or Hugging Face."
 

@@ -5,14 +5,15 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Python Debugger: Current File",
+            "name": "dia server",
             "type": "debugpy",
             "request": "launch",
             "program": "${file}",
-            "console": "integratedTerminal"
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/dia/dia_server"
         },
         {
-            "name": "server",
+            "name": "kokoro server",
             "type": "debugpy",
             "request": "launch",
             "program": "${file}",
