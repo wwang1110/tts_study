@@ -7,7 +7,7 @@ misaki[en]==0.9.4
 # Web framework and dependencies
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
-pydantic==2.5.0  # Required by FastAPI for request/response models (lines 25, 129, 133, 139)
+pydantic
 gunicorn==21.2.0  # Production WSGI server
 
 # Optional language support (uncomment if needed)
