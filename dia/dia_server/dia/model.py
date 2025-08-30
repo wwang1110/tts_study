@@ -204,7 +204,7 @@ class Dia:
 
         # Load model directly using DiaModel's from_pretrained which handles HF download
         try:
-            loaded_model = DiaModel.from_pretrained(model_name, compute_dtype=compute_dtype.to_dtype())
+            loaded_model = DiaModel.from_pretrained(model_name, compute_dtype=compute_dtype.to_dtype(), cache_dir='./.cache')
         except Exception as e:
             raise RuntimeError(f"Error loading model from Hugging Face Hub ({model_name})") from e
 

@@ -1,4 +1,4 @@
-from dia import Dia
+from dia.model import Dia
 
 
 #model = Dia.from_pretrained(model_name="nari-labs/Dia-1.6B-0626", compute_dtype="float16", cache_dir="./.cache")
