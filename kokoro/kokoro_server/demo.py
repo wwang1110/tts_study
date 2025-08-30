@@ -4,7 +4,6 @@ import soundfile as sf
 from tts_components import (
     Config,
     text_to_phonemes,
-    audio_to_wav_bytes
 )
 import logging
 
@@ -53,8 +52,7 @@ async def main():
     
     logger.debug(f"Audio generation successful: {len(audio_tensor)} samples")
     # Save the audio to a file
-    audio_bytes = audio_to_wav_bytes(audio_tensor)
-    output_file = "demo_output.wav"
+    output_file = "demo_batch.wav"
     sf.write(output_file, audio_tensor, 24000)
     logger.info(f"Audio saved to {output_file}")
 
