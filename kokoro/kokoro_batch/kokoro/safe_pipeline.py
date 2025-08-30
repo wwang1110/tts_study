@@ -115,3 +115,17 @@ class SafePipeline:
             voice_tensor.append(v[len(p)-1])
         output = self.model(phonemes, voice_tensor, speeds, return_output=True)
         return output.audio
+    
+        '''
+        device = self.model.device
+        voice_packs = torch.stack([self.voices[voice].to(device) for voice in voices])  # shape [batch, 510, 1, 256]
+
+        phoneme_lengths = torch.tensor([len(p) for p in phonemes], device=device) - 1  # shape [batch]
+
+        # Advanced indexing: select voice embeddings by phoneme length for each sample in batch
+        # voice_packs shape: [batch, 510, 1, 256]
+        # phoneme_lengths shape: [batch]
+        # gather embeddings at phoneme_lengths indices along dim=1
+        indices = phoneme_lengths.view(-1, 1, 1).expand(-1, 1, voice_packs.size(-1))
+        selected_voice_tensors = torch.gather(voice_packs, dim=1, index=indices).squeeze(1)  # shape [batch, 1, 256]
+        '''
