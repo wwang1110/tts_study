@@ -96,7 +96,7 @@ class KModel(torch.nn.Module):
         d = self.predictor.text_encoder(d_en, s, input_lengths, text_mask)
         x, _ = self.predictor.lstm(d)
         duration = self.predictor.duration_proj(x)
-        duration = torch.sigmoid(duration).sum(axis=-1) / speeds
+        duration = torch.sigmoid(duration).sum(axis=-1) / speeds.unsqueeze(1).to(self.device)
         pred_dur = torch.round(duration).clamp(min=1).long()
 
         pred_aln_trgs = []
