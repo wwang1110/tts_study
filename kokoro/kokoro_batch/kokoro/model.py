@@ -7,6 +7,7 @@ from typing import Dict, Optional, Union
 import json
 import torch
 from torch.nn.utils.rnn import pad_sequence
+import torch.nn.functional as F
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -82,6 +83,7 @@ class KModel(torch.nn.Module):
         ref_s: torch.FloatTensor,
         speed: float = 1
     ) -> tuple[torch.FloatTensor, torch.LongTensor]:
+        batch_size = len(input_ids)
 
         input_lengths = torch.tensor([t.size(0) for t in input_ids], dtype=torch.long) 
         text_mask = torch.arange(input_lengths.max()).unsqueeze(0).expand(input_lengths.shape[0], -1).type_as(input_lengths)
@@ -95,15 +97,29 @@ class KModel(torch.nn.Module):
         x, _ = self.predictor.lstm(d)
         duration = self.predictor.duration_proj(x)
         duration = torch.sigmoid(duration).sum(axis=-1) / speed
-        pred_dur = torch.round(duration).clamp(min=1).long().squeeze()
-        indices = torch.repeat_interleave(torch.arange(input_ids.shape[1], device=self.device), pred_dur)
-        pred_aln_trg = torch.zeros((input_ids.shape[1], indices.shape[0]), device=self.device)
-        pred_aln_trg[indices, torch.arange(indices.shape[0])] = 1
-        pred_aln_trg = pred_aln_trg.unsqueeze(0).to(self.device)
-        en = d.transpose(-1, -2) @ pred_aln_trg
+        pred_dur = torch.round(duration).clamp(min=1).long()
+
+        pred_aln_trgs = []
+        for i in range(batch_size):
+            indices = torch.repeat_interleave(torch.arange(input_ids.shape[1], device=self.device), pred_dur[i])
+
+            pred_aln_trg = torch.zeros((input_ids.shape[1], indices.shape[0]), device=self.device)
+            pred_aln_trg[indices, torch.arange(indices.shape[0])] = 1
+            pred_aln_trgs.append(pred_aln_trg)
+
+        max_size = max(t.shape[1] for t in pred_aln_trgs)
+        padded_tensors = []
+        for t in pred_aln_trgs:
+            pad_size = max_size - t.shape[1]
+            # Pad the second dimension (last two values in pad correspond to dim 1)
+            padded_t = F.pad(t, (0, pad_size))  # pad right side with zeros
+            padded_tensors.append(padded_t)
+        pred_aln_trgs = torch.stack(padded_tensors, dim=0).to(self.device)
+
+        en = d.transpose(-1, -2) @ pred_aln_trgs
         F0_pred, N_pred = self.predictor.F0Ntrain(en, s)
         t_en = self.text_encoder(input_ids, input_lengths, text_mask)
-        asr = t_en @ pred_aln_trg
+        asr = t_en @ pred_aln_trgs
         audio = self.decoder(asr, F0_pred, N_pred, ref_s[:, :128]).squeeze()
         return audio, pred_dur
 
@@ -120,6 +136,7 @@ class KModel(torch.nn.Module):
         assert len(input_ids[0])+2 <= self.context_length, (len(input_ids[0])+2, self.context_length)
 
         #input_ids = input_ids[0]
+        ref_s = [t.squeeze(0) for t in ref_s] 
         ref_s = torch.stack(ref_s)
         speed = speeds[0]
 
