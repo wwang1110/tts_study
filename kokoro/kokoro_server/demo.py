@@ -52,7 +52,7 @@ async def main():
     
     logger.debug(f"Audio generation successful: {len(audio_tensor)} samples")
     # Save the audio to a file
-    output_file = "demo_batch.wav"
+    output_file = "demo_audio.wav"
     sf.write(output_file, audio_tensor, 24000)
     logger.info(f"Audio saved to {output_file}")
 
