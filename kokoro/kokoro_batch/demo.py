@@ -24,16 +24,19 @@ async def main():
     pipeline = SafePipeline(cache_dir="./.cache")
     
     texts = [
+        "Text-to-Speech (TTS) technology is a system that converts digital text into spoken words, often referred to as 'read aloud' technology.",
         "[Kokoro](/kˈOkəɹO/) is an open-weight TTS model with 82 million parameters. Despite its lightweight architecture, it delivers comparable quality to larger models while being significantly faster and more cost-efficient. With Apache-licensed weights, [Kokoro](/kˈOkəɹO/) can be deployed anywhere from production environments to personal projects.",
         "Hello, world!"
     ]
 
     voices = [
         "af_heart",
-        "am_adam"
+        "am_adam",
+        "af_nova"
     ]
 
     speeds = [
+        1.0,
         1.0,
         1.0
     ]
@@ -48,6 +51,13 @@ async def main():
     ))
     phonemes.append(await text_to_phonemes(
         texts[1],
+        "a",  # Default to English
+        g2p_session,
+        config.g2p_url,
+        config.g2p_timeout
+    ))
+    phonemes.append(await text_to_phonemes(
+        texts[2],
         "a",  # Default to English
         g2p_session,
         config.g2p_url,
@@ -69,10 +79,10 @@ async def main():
     
     logger.debug(f"Audio generation successful: {len(audio_tensor)} samples")
     # Save the audio to a file
-    audio_bytes = audio_to_wav_bytes(audio_tensor)
     output_file = "demo_output.wav"
-    sf.write(output_file, audio_tensor, 24000)
-    logger.info(f"Audio saved to {output_file}")
+    for i, audio in enumerate(audio_tensor):
+        sf.write(f"{output_file}_{i}.wav", audio, 24000)
+        logger.info(f"Audio saved to {output_file}_{i}.wav")
 
 
 if __name__ == "__main__":
