@@ -81,7 +81,7 @@ class KModel(torch.nn.Module):
         self,
         input_ids: list[torch.LongTensor],
         ref_s: torch.FloatTensor,
-        speed: float = 1
+        speeds: torch.FloatTensor
     ) -> tuple[torch.FloatTensor, torch.LongTensor]:
         batch_size = len(input_ids)
 
@@ -96,7 +96,7 @@ class KModel(torch.nn.Module):
         d = self.predictor.text_encoder(d_en, s, input_lengths, text_mask)
         x, _ = self.predictor.lstm(d)
         duration = self.predictor.duration_proj(x)
-        duration = torch.sigmoid(duration).sum(axis=-1) / speed
+        duration = torch.sigmoid(duration).sum(axis=-1) / speeds
         pred_dur = torch.round(duration).clamp(min=1).long()
 
         pred_aln_trgs = []
@@ -120,7 +120,7 @@ class KModel(torch.nn.Module):
         F0_pred, N_pred = self.predictor.F0Ntrain(en, s)
         t_en = self.text_encoder(input_ids, input_lengths, text_mask)
         asr = t_en @ pred_aln_trgs
-        audio = self.decoder(asr, F0_pred, N_pred, ref_s[:, :128]).squeeze()
+        audio = self.decoder(asr, F0_pred, N_pred, ref_s[:, :128]).squeeze(dim=1)
         return audio, pred_dur
 
     def forward(
@@ -138,12 +138,11 @@ class KModel(torch.nn.Module):
         #input_ids = input_ids[0]
         ref_s = [t.squeeze(0) for t in ref_s] 
         ref_s = torch.stack(ref_s)
-        speed = speeds[0]
 
         input_ids = [torch.LongTensor([0, *i, 0]).to(self.device) for i in input_ids]
         ref_s = ref_s.to(self.device)
-        audio, pred_dur = self.forward_with_tokens(input_ids, ref_s, speed)
-        audio = audio.squeeze().cpu()
+        audio, pred_dur = self.forward_with_tokens(input_ids, ref_s, torch.FloatTensor(speeds))
+        audio = audio.cpu()
         pred_dur = pred_dur.cpu() if pred_dur is not None else None
         logger.debug(f"pred_dur: {pred_dur}")
         return self.Output(audio=audio, pred_dur=pred_dur) if return_output else audio
