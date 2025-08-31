@@ -6,6 +6,7 @@ from transformers import AlbertConfig
 from typing import Dict, Optional, Union
 import json
 import torch
+from torch.nn.utils.rnn import pad_sequence
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -77,19 +78,16 @@ class KModel(torch.nn.Module):
     @torch.no_grad()
     def forward_with_tokens(
         self,
-        input_ids: torch.LongTensor,
+        input_ids: list[torch.LongTensor],
         ref_s: torch.FloatTensor,
         speed: float = 1
     ) -> tuple[torch.FloatTensor, torch.LongTensor]:
-        input_lengths = torch.full(
-            (input_ids.shape[0],), 
-            input_ids.shape[-1], 
-            device=input_ids.device,
-            dtype=torch.long
-        )
 
+        input_lengths = torch.tensor([t.size(0) for t in input_ids], dtype=torch.long) 
         text_mask = torch.arange(input_lengths.max()).unsqueeze(0).expand(input_lengths.shape[0], -1).type_as(input_lengths)
         text_mask = torch.gt(text_mask+1, input_lengths.unsqueeze(1)).to(self.device)
+
+        input_ids = pad_sequence(input_ids, batch_first=True, padding_value=0)
         bert_dur = self.bert(input_ids, attention_mask=(~text_mask).int())
         d_en = self.bert_encoder(bert_dur).transpose(-1, -2)
         s = ref_s[:, 128:]
@@ -121,11 +119,11 @@ class KModel(torch.nn.Module):
         logger.debug(f"phonemes: {phonemes[0]} -> input_ids: {input_ids[0]}")
         assert len(input_ids[0])+2 <= self.context_length, (len(input_ids[0])+2, self.context_length)
 
-        input_ids = input_ids[0]
-        ref_s = ref_s[0]
+        #input_ids = input_ids[0]
+        ref_s = torch.stack(ref_s)
         speed = speeds[0]
 
-        input_ids = torch.LongTensor([[0, *input_ids, 0]]).to(self.device)
+        input_ids = [torch.LongTensor([0, *i, 0]).to(self.device) for i in input_ids]
         ref_s = ref_s.to(self.device)
         audio, pred_dur = self.forward_with_tokens(input_ids, ref_s, speed)
         audio = audio.squeeze().cpu()
