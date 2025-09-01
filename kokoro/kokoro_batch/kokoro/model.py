@@ -5,6 +5,7 @@ import logging
 from transformers import AlbertConfig
 from typing import Dict, Optional, Union
 import json
+import math
 import torch
 from torch.nn.utils.rnn import pad_sequence
 import torch.nn.functional as F
@@ -67,6 +68,8 @@ class KModel(torch.nn.Module):
                 state_dict = {k[7:]: v for k, v in state_dict.items()}
                 getattr(self, key).load_state_dict(state_dict, strict=False)
 
+        self.upsample_scale=math.prod(config['istftnet']['upsample_rates']) * config['istftnet']['gen_istft_hop_size']
+
     @property
     def device(self):
         return self.bert.device
@@ -98,6 +101,7 @@ class KModel(torch.nn.Module):
         duration = self.predictor.duration_proj(x)
         duration = torch.sigmoid(duration).sum(axis=-1) / speeds.unsqueeze(1).to(self.device)
         pred_dur = torch.round(duration).clamp(min=1).long()
+        pred_dur = pred_dur * (~text_mask).long()
 
         pred_aln_trgs = []
         for i in range(batch_size):
@@ -122,6 +126,8 @@ class KModel(torch.nn.Module):
         t_en = self.text_encoder(input_ids, input_lengths, text_mask)
         asr = t_en @ pred_aln_trgs
         audio = self.decoder(asr, F0_pred, N_pred, ref_s[:, :128]).squeeze(dim=1)
+
+        audio = [audio[i, :2*audio_lengths[i]*self.upsample_scale] for i in range(batch_size)]
         return audio, pred_dur
 
     def forward(
@@ -143,7 +149,7 @@ class KModel(torch.nn.Module):
         input_ids = [torch.LongTensor([0, *i, 0]).to(self.device) for i in input_ids]
         ref_s = ref_s.to(self.device)
         audio, pred_dur = self.forward_with_tokens(input_ids, ref_s, torch.FloatTensor(speeds))
-        audio = audio.cpu()
+        audio = [a.cpu() for a in audio]
         pred_dur = pred_dur.cpu() if pred_dur is not None else None
         logger.debug(f"pred_dur: {pred_dur}")
         return self.Output(audio=audio, pred_dur=pred_dur) if return_output else audio
