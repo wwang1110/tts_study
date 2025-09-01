@@ -107,7 +107,8 @@ class KModel(torch.nn.Module):
             pred_aln_trg[indices, torch.arange(indices.shape[0])] = 1
             pred_aln_trgs.append(pred_aln_trg)
 
-        max_size = max(t.shape[1] for t in pred_aln_trgs)
+        audio_lengths = [t.shape[1] for t in pred_aln_trgs]
+        max_size = max(audio_lengths)
         padded_tensors = []
         for t in pred_aln_trgs:
             pad_size = max_size - t.shape[1]

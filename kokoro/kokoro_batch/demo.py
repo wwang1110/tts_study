@@ -24,45 +24,26 @@ async def main():
     pipeline = SafePipeline(cache_dir="./.cache")
     
     texts = [
-        "Text-to-Speech (TTS) technology is a system that converts digital text into spoken words, often referred to as 'read aloud' technology.",
         "[Kokoro](/kˈOkəɹO/) is an open-weight TTS model with 82 million parameters. Despite its lightweight architecture, it delivers comparable quality to larger models while being significantly faster and more cost-efficient. With Apache-licensed weights, [Kokoro](/kˈOkəɹO/) can be deployed anywhere from production environments to personal projects.",
-        "Hello, world!"
+        "Hello, world!",
+        "Text-to-Speech (TTS) technology is a system that converts digital text into spoken words, often referred to as 'read aloud' technology.",
     ]
 
-    voices = [
-        "af_heart",
-        "am_adam",
-        "af_nova"
-    ]
-
-    speeds = [
-        1.0,
-        1.0,
-        1.0
-    ]
-    
     phonemes = []
-    phonemes.append(await text_to_phonemes(
-        texts[0],
-        "a",  # Default to English
-        g2p_session,
-        config.g2p_url,
-        config.g2p_timeout
-    ))
-    phonemes.append(await text_to_phonemes(
-        texts[1],
-        "a",  # Default to English
-        g2p_session,
-        config.g2p_url,
-        config.g2p_timeout
-    ))
-    phonemes.append(await text_to_phonemes(
-        texts[2],
-        "a",  # Default to English
-        g2p_session,
-        config.g2p_url,
-        config.g2p_timeout
-    ))
+    voices = []
+    speeds = []
+
+    #phonemes.append(await text_to_phonemes(texts[0], "a", g2p_session,config.g2p_url, config.g2p_timeout))
+    #voices.append("af_heart")
+    #speeds.append(1.0)
+
+    phonemes.append(await text_to_phonemes(texts[1], "a", g2p_session,config.g2p_url, config.g2p_timeout))
+    voices.append("am_adam")
+    speeds.append(1.0)
+
+    #phonemes.append(await text_to_phonemes(texts[2], "a", g2p_session, config.g2p_url, config.g2p_timeout))
+    #voices.append("af_nova")
+    #speeds.append(1.0)
 
     logger.info(f"G2P conversion successful: {len(phonemes)} phonemes")
     
