@@ -8,6 +8,7 @@ import json
 import math
 import torch
 from torch.nn.utils.rnn import pad_sequence
+from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 import torch.nn.functional as F
 
 # Configure logging
@@ -98,21 +99,34 @@ class KModel(torch.nn.Module):
         s = ref_s[:, 128:]
         d = self.predictor.text_encoder(d_en, s, input_lengths, text_mask)
 
-        c = []
-        for i in range(batch_size):
-            m = d[i, :input_lengths[i], :]
-            n, _ = self.predictor.lstm(m)
-            c.append(n)
-        x = pad_sequence(c, batch_first=True, padding_value=0.0)
 
+        # option 1, batch process rnn 
+        # Sort sequences by length in descending order (required by pack_padded_sequence)
+        input_lengths_sorted, sorted_idx = torch.sort(input_lengths, descending=True)
+        d_sorted = d[sorted_idx]
+        # Pack padded sequence
+        packed_input = pack_padded_sequence(d_sorted, input_lengths_sorted, batch_first=True)
+        # Pass packed_input through LSTM as a single batch
+        packed_output, _ = self.predictor.lstm(packed_input.float())
+        # Pad packed output back to tensor
+        output_padded, _ = pad_packed_sequence(packed_output, batch_first=True)
 
-        #x, _ = self.predictor.lstm(d)
+        # Undo sorting to original order
+        _, original_idx = torch.sort(sorted_idx)
+        x = output_padded[original_idx]
+
+        # option 2, process each sequence individually
+        # c = []
+        # for i in range(batch_size):
+        #     m = d[i, :input_lengths[i], :]
+        #     n, _ = self.predictor.lstm(m)
+        #     c.append(n)
+        # x = pad_sequence(c, batch_first=True, padding_value=0.0)
 
         duration = self.predictor.duration_proj(x)
         duration = torch.sigmoid(duration).sum(axis=-1) / speeds.unsqueeze(1).to(self.device)
         pred_dur = torch.round(duration).clamp(min=1).long()
         pred_dur = pred_dur * (~text_mask).long()
-        #pred_dur[1, :16] = torch.LongTensor([13, 2, 3, 2, 5, 3, 1, 2, 2, 2, 3, 4, 3, 16, 8, 1])
 
         pred_aln_trgs = []
         for i in range(batch_size):
