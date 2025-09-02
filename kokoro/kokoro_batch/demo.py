@@ -41,9 +41,9 @@ async def main():
     voices.append("am_adam")
     speeds.append(1.0)
 
-    #phonemes.append(await text_to_phonemes(texts[2], "a", g2p_session, config.g2p_url, config.g2p_timeout))
-    #voices.append("af_nova")
-    #speeds.append(1.0)
+    phonemes.append(await text_to_phonemes(texts[2], "a", g2p_session, config.g2p_url, config.g2p_timeout))
+    voices.append("af_nova")
+    speeds.append(1.0)
 
     logger.info(f"G2P conversion successful: {len(phonemes)} phonemes")
     

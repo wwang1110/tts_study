@@ -97,7 +97,17 @@ class KModel(torch.nn.Module):
         d_en = self.bert_encoder(bert_dur).transpose(-1, -2)
         s = ref_s[:, 128:]
         d = self.predictor.text_encoder(d_en, s, input_lengths, text_mask)
-        x, _ = self.predictor.lstm(d)
+
+        c = []
+        for i in range(batch_size):
+            m = d[i, :input_lengths[i], :]
+            n, _ = self.predictor.lstm(m)
+            c.append(n)
+        x = pad_sequence(c, batch_first=True, padding_value=0.0)
+
+
+        #x, _ = self.predictor.lstm(d)
+
         duration = self.predictor.duration_proj(x)
         duration = torch.sigmoid(duration).sum(axis=-1) / speeds.unsqueeze(1).to(self.device)
         pred_dur = torch.round(duration).clamp(min=1).long()
