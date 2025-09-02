@@ -102,6 +102,7 @@ class KModel(torch.nn.Module):
         duration = torch.sigmoid(duration).sum(axis=-1) / speeds.unsqueeze(1).to(self.device)
         pred_dur = torch.round(duration).clamp(min=1).long()
         pred_dur = pred_dur * (~text_mask).long()
+        #pred_dur[1, :16] = torch.LongTensor([13, 2, 3, 2, 5, 3, 1, 2, 2, 2, 3, 4, 3, 16, 8, 1])
 
         pred_aln_trgs = []
         for i in range(batch_size):

@@ -33,9 +33,9 @@ async def main():
     voices = []
     speeds = []
 
-    #phonemes.append(await text_to_phonemes(texts[0], "a", g2p_session,config.g2p_url, config.g2p_timeout))
-    #voices.append("af_heart")
-    #speeds.append(1.0)
+    phonemes.append(await text_to_phonemes(texts[0], "a", g2p_session,config.g2p_url, config.g2p_timeout))
+    voices.append("af_heart")
+    speeds.append(1.0)
 
     phonemes.append(await text_to_phonemes(texts[1], "a", g2p_session,config.g2p_url, config.g2p_timeout))
     voices.append("am_adam")
